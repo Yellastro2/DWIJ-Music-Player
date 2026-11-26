@@ -259,6 +259,9 @@ class DesktopRuntime private constructor(
                     coverCacheDirectory =
                         paths
                             .coverCacheDirectory,
+                    playSourcePreview = { uri, _, controls ->
+                        com.yellastrodev.dwij.desktop.playback.playDesktopSourcePreview(uri, controls)
+                    },
                     playerEngine =
                         playerEngine,
                     localMediaSource =

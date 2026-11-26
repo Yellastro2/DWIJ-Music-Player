@@ -61,6 +61,7 @@ data class TrackSourceOptionUiModel(
  * Управляет уже подтверждёнными source-инстансами и отдельно показывает кандидатов на merge.
  * Первая проигрываемая строка становится preferred-инстансом после завершения перетаскивания;
  * недоступные и незакэшированные Яндекс-инстансы закреплены в конце подтверждённого списка.
+ * При наличии недостающего онлайн-источника [onSearchOtherSources] открывает его поиск.
  */
 @Composable
 fun MultiSourceDialog(
@@ -75,6 +76,7 @@ fun MultiSourceDialog(
     minimumCandidateSelectionCount: Int = 1,
     isSaving: Boolean = false,
     errorMessage: String? = null,
+    onSearchOtherSources: (() -> Unit)? = null,
 ) {
     var selectedIds by remember { mutableStateOf(emptySet<String>()) }
     var orderedConfirmed by remember(confirmedOptions, preferredInstanceId) {
@@ -318,6 +320,15 @@ fun MultiSourceDialog(
                                 fontWeight = FontWeight.Bold,
                             )
                         }
+                    }
+                }
+                if (onSearchOtherSources != null) {
+                    TextButton(
+                        onClick = onSearchOtherSources,
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp),
+                    ) {
+                        Text(stringResource(Res.string.multi_source_search), color = DwijColors.Pink)
                     }
                 }
             }

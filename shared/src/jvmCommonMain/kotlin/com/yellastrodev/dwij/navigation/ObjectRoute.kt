@@ -61,6 +61,7 @@ import com.yellastrodev.dwij.resources.catalog_likes_count
 import com.yellastrodev.dwij.resources.catalog_load_error
 import com.yellastrodev.dwij.resources.catalog_monthly_listeners
 import com.yellastrodev.dwij.resources.catalog_yandex_track_count
+import com.yellastrodev.dwij.resources.multi_source_confirmed_title
 import com.yellastrodev.dwij.resources.track_unavailable_yandex
 import com.yellastrodev.dwij.resources.track_save_locally
 import com.yellastrodev.dwij.resources.track_saved_locally
@@ -70,7 +71,10 @@ import com.yellastrodev.dwij.resources.playlist_save_locally_nothing
 import com.yellastrodev.dwij.resources.playlist_save_locally_queued
 import com.yellastrodev.dwij.resources.playlist_save_locally_failed
 import com.yellastrodev.dwij.ui.LocalYamLogger
+import com.yellastrodev.dwij.ui.CollectionTrackSourcesDialog
 import com.yellastrodev.dwij.ui.MultiSourceDialog
+import com.yellastrodev.dwij.ui.TrackSourceSearchDialog
+import com.yellastrodev.dwij.ui.missingOnlineSources
 import com.yellastrodev.dwij.ui.ObjectScreen
 import com.yellastrodev.dwij.ui.TrackSourceIndicator
 import com.yellastrodev.dwij.ui.TrackSourceOptionUiModel
@@ -224,6 +228,7 @@ fun ObjectRoute(
     }
     var isRefreshing by remember { mutableStateOf(false) }
     var sourceDialogSongId by remember { mutableStateOf<String?>(null) }
+    var sourceSearchSong by remember { mutableStateOf<Song?>(null) }
     var candidateSongs by remember(sourceDialogSongId) {
         mutableStateOf(emptyList<Song>())
     }
@@ -532,7 +537,7 @@ fun ObjectRoute(
             onTrackClick = { position, item ->
                 when {
                     item.isPlaybackBlocked &&
-                        (item.hasMultipleSources || item.hasUnresolvedMatchCandidate) -> {
+                        (item.isYandexUnavailable || item.hasMultipleSources || item.hasUnresolvedMatchCandidate) -> {
                         mergeSourcesError = null
                         sourceDialogSongId = item.trackId
                     }
@@ -623,6 +628,14 @@ fun ObjectRoute(
                 null
             },
             trackContextMenuContent = { _, item, onDismiss ->
+                DropdownMenuItem(
+                    text = { Text(stringResource(Res.string.multi_source_confirmed_title)) },
+                    onClick = {
+                        onDismiss()
+                        mergeSourcesError = null
+                        sourceDialogSongId = item.trackId
+                    },
+                )
                 item.yandexTrackId?.let { yandexTrackId ->
                     YandexShareMenuItem(
                         onClick = {
@@ -670,8 +683,22 @@ fun ObjectRoute(
         )
     }
 
-    if (sourceDialogSong != null) {
-        val manageConfirmedSources = confirmedSourceOptions.size > 1
+    sourceSearchSong?.let { original ->
+        TrackSourceSearchDialog(
+            song = original,
+            component = component,
+            onDismiss = { sourceSearchSong = null },
+            onLinked = { sourceSongIds, updated ->
+                model.applyMergedSong(sourceSongIds, updated)
+                playerModel.applyMergedSong(sourceSongIds, updated)
+                sourceSearchSong = null
+                sourceDialogSongId = updated.id
+            },
+        )
+    }
+
+    if (sourceDialogSong != null && sourceSearchSong == null) {
+        val manageConfirmedSources = confirmedSourceOptions.size > 1 || candidateSourceOptions.isEmpty()
         MultiSourceDialog(
             confirmedOptions = if (manageConfirmedSources) {
                 confirmedSourceOptions
@@ -765,21 +792,23 @@ fun ObjectRoute(
 
                         val (mergedSongId, mergedSong) =
                             withContext(Dispatchers.IO) {
-                                val resultId = songRepository.mergeInstances(
-                                    entriesToMerge.map(
-                                        ObjectSourceDialogEntry::instance,
-                                    ),
-                                )
+                                songMatchRepository.withManualLink {
+                                    val resultId = songRepository.mergeInstances(
+                                        entriesToMerge.map(
+                                            ObjectSourceDialogEntry::instance,
+                                        ),
+                                    )
 
-                                val resultSong = requireNotNull(
-                                    songRepository
-                                        .songsByIds(listOf(resultId))
-                                        .firstOrNull(),
-                                ) {
-                                    "Объединённая Song $resultId не найдена"
+                                    val resultSong = requireNotNull(
+                                        songRepository
+                                            .songsByIds(listOf(resultId))
+                                            .firstOrNull(),
+                                    ) {
+                                        "Объединённая Song $resultId не найдена"
+                                    }
+
+                                    resultId to resultSong
                                 }
-
-                                resultId to resultSong
                             }
 
                         model.applyMergedSong(
@@ -822,11 +851,14 @@ fun ObjectRoute(
             minimumCandidateSelectionCount = if (manageConfirmedSources) 1 else 2,
             isSaving = isMergingSources || isUpdatingSourcePriority,
             errorMessage = mergeSourcesError,
+            onSearchOtherSources = if (sourceDialogSong.missingOnlineSources().isNotEmpty()) {
+                { sourceSearchSong = sourceDialogSong }
+            } else null,
         )
     }
 }
 
-/** Показывает объект каталога ЯМ и подгружает треки артиста при прокрутке. */
+/** Показывает объект каталога ЯМ, подгружает треки артиста и открывает источники недоступной песни. */
 @Composable
 private fun CatalogObjectRoute(
     component: DwijComponent,
@@ -849,6 +881,7 @@ private fun CatalogObjectRoute(
         factory = factory,
     )
     val state by model.state.collectAsState()
+    var sourceSong by remember(kind, externalId) { mutableStateOf<Song?>(null) }
     val unknownArtist = stringResource(Res.string.home_player_unknown_artist)
     val listState = rememberLazyListState()
     val trackCount = state.tracks.size
@@ -925,6 +958,15 @@ private fun CatalogObjectRoute(
         else -> stringResource(Res.string.track_list_empty)
     }
 
+    sourceSong?.let { song ->
+        CollectionTrackSourcesDialog(
+            initialSong = song,
+            component = component,
+            onDismiss = { sourceSong = null },
+            onChanged = model::applyMergedSong,
+        )
+    }
+
     ObjectScreen(
         title = state.title.ifBlank {
             stringResource(Res.string.object_loading_title)
@@ -945,7 +987,10 @@ private fun CatalogObjectRoute(
             }
         },
         onTrackClick = { index, item ->
-            if (!item.isPlaybackBlocked && model.play(index)) {
+            if (item.isPlaybackBlocked && item.isYandexUnavailable) {
+                sourceSong = state.tracks.getOrNull(index)?.takeIf { it.id == item.trackId }
+                    ?: state.tracks.firstOrNull { it.id == item.trackId }
+            } else if (!item.isPlaybackBlocked && model.play(index)) {
                 onOpenPlayer()
             }
         },
@@ -1096,7 +1141,7 @@ private fun List<Song>.toObjectTrackListItems(
             yandexTrackId = localSaveYandexTrackId,
             isYandexUnavailable = yandexUnavailable,
             isPlaybackBlocked =
-                song.localInstances.isEmpty() && !yandexPlayable,
+                song.localInstances.isEmpty() && song.vkInstances.isEmpty() && !yandexPlayable,
             hasMultipleSources = song.instances.size > 1,
             hasUnresolvedMatchCandidate = song.hasPendingMatchCandidate,
             isLocalOnlyInLibrary = song.isLocalOnlyInLibrary,

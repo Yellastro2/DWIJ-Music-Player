@@ -17,6 +17,8 @@ import com.yellastrodev.dwij.models.VkPlaylistModel
 import com.yellastrodev.dwij.data.repo.VK_ALL_TRACKS
 import com.yellastrodev.dwij.resources.*
 import com.yellastrodev.dwij.ui.ObjectScreen
+import com.yellastrodev.dwij.ui.CollectionTrackSourcesDialog
+import com.yellastrodev.dwij.data.entities.Song
 import com.yellastrodev.dwij.ui.playlist.PlaylistGridPlatform
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -26,7 +28,7 @@ import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
 
-/** Показывает перемешанное объединение тех же списков, что отдельные разделы трёх источников. */
+/** Показывает общую фонотеку и открывает источники для недоступных треков. */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @Composable
 internal fun AllTracksRoute(
@@ -55,8 +57,15 @@ internal fun AllTracksRoute(
         AllTracksModel(
             localSongs = component.localMusicRepository.songs,
             yandexSongs = yandexModel.tracks,
-            vkSongs = vkModel.state.map { it.tracks }.distinctUntilChanged()
-                .mapLatest { component.songRepository.songsForVkTracks(it) }.flowOn(Dispatchers.IO),
+            vkSongs = combine(
+                vkModel.state.map { it.tracks }.distinctUntilChanged(),
+                component.songRepository.vkSongs,
+            ) { tracks, songs ->
+                val byVkId = songs.flatMap { song ->
+                    song.vkInstances.map { it.track.fullId to song }
+                }.toMap()
+                tracks.mapNotNull { byVkId[it.fullId] }
+            }.flowOn(Dispatchers.IO),
             player = component.playerRepo,
             wave = component.waveRepository,
         )
@@ -72,6 +81,7 @@ internal fun AllTracksRoute(
     val vkMembership by vkRepository.membershipRevision.collectAsState()
     val localSyncing by component.localMusicRepository.isSynchronizing.collectAsState()
     var refreshing by remember { mutableStateOf(false) }
+    var sourceSong by remember { mutableStateOf<Song?>(null) }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val title = stringResource(Res.string.all_tracks_title)
@@ -119,6 +129,14 @@ internal fun AllTracksRoute(
             )
         }
     }
+    sourceSong?.let { song ->
+        CollectionTrackSourcesDialog(
+            initialSong = song,
+            component = component,
+            onDismiss = { sourceSong = null },
+            onChanged = yandexModel::applyMergedSong,
+        )
+    }
     Box(modifier.fillMaxSize()) {
         ObjectScreen(
             title = title,
@@ -128,7 +146,24 @@ internal fun AllTracksRoute(
             tracks = items,
             onBackClick = onBackClick,
             onPlayClick = { play(null) },
-            onTrackClick = { _, item -> play(item.trackId) },
+            onTrackClick = { _, item ->
+                if (item.isPlaybackBlocked &&
+                    (item.isYandexUnavailable || item.hasMultipleSources || item.hasUnresolvedMatchCandidate)
+                ) {
+                    sourceSong = songsById[item.trackId]
+                } else {
+                    play(item.trackId)
+                }
+            },
+            trackContextMenuContent = { _, item, dismiss ->
+                DropdownMenuItem(
+                    text = { Text(stringResource(Res.string.multi_source_confirmed_title)) },
+                    onClick = {
+                        dismiss()
+                        sourceSong = songsById[item.trackId]
+                    },
+                )
+            },
             loadTrackCover = { id -> songsById[id]?.let { playerModel.cover(it, maxEdgePx = 180).firstOrNull() } },
             showShare = false,
             showWave = false,

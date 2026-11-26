@@ -43,6 +43,7 @@ import com.yellastrodev.dwij.data.source.WaveRemoteSource
 import com.yellastrodev.dwij.playback.PlaybackSettings
 import com.yellastrodev.dwij.playback.DailyPlaylistPlayback
 import com.yellastrodev.dwij.playback.PlayerEngine
+import com.yellastrodev.dwij.playback.SourcePreviewControls
 import com.yellastrodev.dwij.playback.TrackCoverLoader
 import com.yellastrodev.dwij.playback.feedback.PlaybackFeedbackTracker
 import com.yellastrodev.dwij.storage.CacheSettings
@@ -99,6 +100,7 @@ class DwijComponent private constructor(
     private val coverCacheDirectory: File,
     private val playbackSettings: PlaybackSettings,
     private val playerEngine: PlayerEngine,
+    val playSourcePreview: suspend (String, Boolean, SourcePreviewControls) -> Unit,
     private val musicSourceSettings: MusicSourceSettings,
     private val localMediaSource: LocalMediaSource,
     private val canReadAudio: () -> Boolean,
@@ -520,6 +522,7 @@ class DwijComponent private constructor(
             localYandexTrackDirectory: File,
             coverCacheDirectory: File,
             playerEngine: PlayerEngine,
+            playSourcePreview: suspend (String, Boolean, SourcePreviewControls) -> Unit,
             localMediaSource: LocalMediaSource,
             canReadAudio: () -> Boolean,
             platformLifecycle: DwijPlatformLifecycle =
@@ -600,6 +603,7 @@ class DwijComponent private constructor(
                     playbackSettings,
                 playerEngine =
                     playerEngine,
+                playSourcePreview = playSourcePreview,
                 musicSourceSettings =
                     musicSourceSettings,
                 localMediaSource =

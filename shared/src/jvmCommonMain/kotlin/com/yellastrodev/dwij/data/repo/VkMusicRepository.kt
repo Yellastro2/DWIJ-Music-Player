@@ -699,7 +699,7 @@ class VkMusicRepository(
     }
 
     /** Получает страницу VK; локальный fallback доступен только для первой страницы и не имеет продолжения. */
-    private suspend fun searchPage(query: String, offset: Int): DataResult<VkAudioPage> {
+    internal suspend fun searchPage(query: String, offset: Int): DataResult<VkAudioPage> {
         val result = operation("search") {
             val active = client ?: throw VkApiException(5)
             val page = active.search(query, offset = offset)

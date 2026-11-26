@@ -215,8 +215,7 @@ fun FullPlayerScreen(
             FullPlayerTopBar(
                 queueTitle = state.queueTitle,
                 queuePosition = state.queuePosition,
-                showSourcesIndicator = state.hasMultipleSources ||
-                    state.hasUnresolvedMatchCandidate,
+                showSourcesIndicator = state.trackId != null,
                 queueOrigin = state.queueOrigin,
                 isOffline = state.isOffline,
                 canStartTrackWave = state.canStartTrackWave,

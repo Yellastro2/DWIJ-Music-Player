@@ -191,16 +191,14 @@ class SongMatchCandidatesModel(
                 val sourceSongIds = selectedEntries
                     .mapTo(linkedSetOf(), SongMatchSourceEntry::songId)
 
-                val mergedSongId = songRepository.mergeInstances(
-                    selectedEntries.map(SongMatchSourceEntry::instance),
-                )
-
-                val mergedSong = requireNotNull(
-                    songRepository
-                        .songsByIds(listOf(mergedSongId))
-                        .firstOrNull(),
-                ) {
-                    "Объединённая Song $mergedSongId не найдена"
+                val (mergedSongId, mergedSong) = songMatchRepository.withManualLink {
+                    val id = songRepository.mergeInstances(
+                        selectedEntries.map(SongMatchSourceEntry::instance),
+                    )
+                    val song = requireNotNull(songRepository.songsByIds(listOf(id)).firstOrNull()) {
+                        "Объединённая Song $id не найдена"
+                    }
+                    id to song
                 }
 
                 playerRepository.applyMergedSong(

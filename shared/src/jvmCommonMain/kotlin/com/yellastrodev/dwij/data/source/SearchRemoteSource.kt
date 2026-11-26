@@ -15,15 +15,17 @@ class SearchRemoteSource(
     suspend fun searchAll(query: String): DataResult<SearchResponse> =
         search(query = query, type = SearchType.ALL)
 
-    /** Запрашивает одну категорию, чтобы фоновые потребители не загружали лишние разделы. */
+    /** Запрашивает страницу одной категории, чтобы не загружать лишние разделы. */
     suspend fun search(
         query: String,
         type: SearchType,
+        page: Int = 0,
     ): DataResult<SearchResponse> =
         when (
             val result = client.search(
                 text = query,
                 type = type,
+                page = page,
             )
         ) {
             is YamResult.Success -> DataResult.Success(result.value)

@@ -20,6 +20,7 @@ import com.yellastrodev.yamusicsdk.entities.CoverSize
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -148,6 +149,13 @@ class CatalogObjectModel(
     fun refresh() {
         val externalId = _state.value.externalId ?: return
         load(_state.value.kind, externalId, force = true)
+    }
+
+    /** Обновляет строки каталога после привязки или смены приоритета источника. */
+    fun applyMergedSong(sourceSongIds: Set<String>, mergedSong: Song) {
+        _state.update { current ->
+            current.copy(tracks = current.tracks.map { if (it.id in sourceSongIds) mergedSong else it })
+        }
     }
 
     /** Запускает выбранную строку и передаёт плееру курсор каталога на момент запуска. */

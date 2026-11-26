@@ -114,6 +114,9 @@ class AndroidDwijComponentFactory(
                     application.cacheDir,
                     DIR_COVER_CACHE,
                 ),
+            playSourcePreview = { uri, hls, controls ->
+                com.yellastrodev.dwij.playback.playAndroidSourcePreview(context, uri, hls, controls)
+            },
             playerEngine =
                 AndroidPlayerEngine(
                     context =

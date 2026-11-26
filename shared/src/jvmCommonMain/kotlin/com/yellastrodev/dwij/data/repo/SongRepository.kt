@@ -292,6 +292,10 @@ class SongRepository(
     suspend fun mergeInstances(instances: List<TrackInstance>): String =
         songDao.mergeInstances(instances.map(TrackInstance::id))
 
+    /** Подтверждает ручную привязку одного онлайн-экземпляра. */
+    suspend fun linkOnlineInstance(songId: String, instanceId: String): String =
+        songDao.linkOnlineInstance(songId, instanceId)
+
     /** Возвращает актуальные песни по source-ID, сохраняя порядок и повторы найденных записей. */
     suspend fun songsForSourceIds(
         source: MusicSource,

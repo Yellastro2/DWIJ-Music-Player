@@ -7,6 +7,7 @@ import com.yellastrodev.yamusicsdk.YamLogger
 import com.yellastrodev.yamusicsdk.entities.YaArtist
 import com.yellastrodev.yamusicsdk.entities.YaTrack
 import com.yellastrodev.yamusicsdk.search.SearchResponse
+import com.yellastrodev.yamusicsdk.search.SearchSection
 import com.yellastrodev.yamusicsdk.search.SearchType
 
 /** Репозиторий общего поиска и диагностической сводки декодированного ответа. */
@@ -39,6 +40,10 @@ class SearchRepository(
         searchSection(query, SearchType.TRACK) { response ->
             response.tracks?.results.orEmpty()
         }
+
+    /** Возвращает страницу треков с серверным размером выдачи, без индексации результатов. */
+    internal suspend fun searchTrackPage(query: String, page: Int): DataResult<SearchSection<YaTrack>?> =
+        remote.search(query, SearchType.TRACK, page).map { it.tracks }
 
     /** Ищет только артистов и не сохраняет результаты выдачи в Room. */
     override suspend fun searchArtists(query: String): DataResult<List<YaArtist>> =

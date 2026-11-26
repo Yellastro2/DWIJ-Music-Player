@@ -15,6 +15,9 @@ import com.yellastrodev.dwij.data.entities.MusicSource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.yellastrodev.dwij.ui.CollectionTrackSourcesDialog
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
@@ -122,6 +125,11 @@ fun LocalLibraryRoute(
         onOpenPlaylist(playlist.playlistId)
     }
 
+    var sourceSong by remember { mutableStateOf<Song?>(null) }
+    sourceSong?.let { song ->
+        CollectionTrackSourcesDialog(song, component, onDismiss = { sourceSong = null })
+    }
+
     when (content) {
         LocalLibraryContent.PLAYLISTS -> {
             val playlists = state.playlists
@@ -171,6 +179,7 @@ fun LocalLibraryRoute(
                         tracklistName = playlistTitle,
                     )
                 },
+                onOpenTrackSources = { sourceSong = it },
                 onTrackHideRequest =
                     localLibraryModel::requestTrackHide,
                 isLoading =
@@ -205,6 +214,7 @@ fun LocalLibraryRoute(
                         tracklistName = allTracksTitle,
                     )
                 },
+                onOpenTrackSources = { sourceSong = it },
                 onTrackHideRequest =
                     localLibraryModel::requestTrackHide,
                 isLoading =

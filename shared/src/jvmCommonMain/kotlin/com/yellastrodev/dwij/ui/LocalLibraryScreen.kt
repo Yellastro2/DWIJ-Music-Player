@@ -100,6 +100,7 @@ fun LocalTrackCollectionObjectScreen(
     onPlayClick: () -> Unit,
     onTrackClick: (Int, Song) -> Unit,
     onTrackHideRequest: (Song) -> Unit = {},
+    onOpenTrackSources: ((Song) -> Unit)? = null,
     loadTrackCover: suspend (Song) -> ImageBitmap?,
     modifier: Modifier = Modifier,
     isLoading: Boolean = false,
@@ -127,6 +128,15 @@ fun LocalTrackCollectionObjectScreen(
             tracks.getOrNull(index)?.let { track -> onTrackClick(index, track) }
         },
         trackContextMenuContent = { index, _, onDismiss ->
+            onOpenTrackSources?.let { open ->
+                DropdownMenuItem(
+                    text = { Text(stringResource(Res.string.multi_source_confirmed_title)) },
+                    onClick = {
+                        onDismiss()
+                        tracks.getOrNull(index)?.let(open)
+                    },
+                )
+            }
             DropdownMenuItem(
                 text = { Text(stringResource(Res.string.local_track_hide_action)) },
                 onClick = {

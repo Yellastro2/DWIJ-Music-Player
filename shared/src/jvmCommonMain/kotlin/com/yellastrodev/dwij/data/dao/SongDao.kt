@@ -253,6 +253,27 @@ abstract class SongDao {
         return song.songId
     }
 
+    /** Связывает выбранный экземпляр, сохраняя целевую песню и защищая существующие группы. */
+    @Transaction
+    open suspend fun linkOnlineInstance(songId: String, instanceId: String): String {
+        val target = getInstancesForSongs(listOf(songId))
+        val anchor = target.firstOrNull() ?: error("Исходная песня больше недоступна")
+        val candidate = getInstancesByIds(listOf(instanceId)).singleOrNull()
+            ?: error("Выбранный источник больше недоступен")
+        if (candidate.songId == songId) return songId
+        require(target.none { it.source == candidate.source }) { "У песни уже есть этот источник" }
+        require(getInstancesForSongs(listOf(candidate.songId)).size == 1) {
+            "Выбранный трек уже связан с другими источниками"
+        }
+        val preferred = requireNotNull(getSong(songId)).preferredInstanceId
+        val mergedId = mergeInstances(listOf(anchor.instanceId, candidate.instanceId))
+        val merged = requireNotNull(getSong(mergedId))
+        if (merged.preferredInstanceId != preferred) {
+            updateSong(merged.copy(preferredInstanceId = preferred))
+        }
+        return mergedId
+    }
+
     /**
      * Объединяет логические песни, которым принадлежат указанные экземпляры.
      *

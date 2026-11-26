@@ -292,6 +292,16 @@ class TrackRepository(
     }
 
     /** Загружает трек непосредственно в файл/поток и не держит mp3 целиком в heap. */
+    /** Скачивает аудио для прослушивания без регистрации трека в фонотеке. */
+    internal suspend fun downloadSourcePreview(track: dYaTrack, destination: java.io.File): Boolean =
+        destination.outputStream().buffered().use { output ->
+            when (val result = remote.fetchTo(track, output) { _, _ -> }) {
+                is DataResult.Success -> result.value > 0L
+                is DataResult.Failure -> false
+            }
+        }
+
+    /** Скачивает трек с загрузкой метаданных через общий репозиторий. */
     suspend fun downloadTrackTo(
         trackId: String,
         output: OutputStream,

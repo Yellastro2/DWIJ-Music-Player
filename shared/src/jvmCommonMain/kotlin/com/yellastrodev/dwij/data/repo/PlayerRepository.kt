@@ -18,6 +18,8 @@ import com.yellastrodev.dwij.utils.PlayerEvent
 import com.yellastrodev.dwij.utils.PlayerState
 import com.yellastrodev.yamusicsdk.YamLogger
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -61,6 +63,7 @@ class PlayerRepository(
     private val rejectedOfflinePositions = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
     @Volatile private var userQueueGeneration = 0L
     private val queueCommandMutex = Mutex()
+    private val sourcePreviewMutex = Mutex()
     @Volatile private var offlineTransition: Job? = null
     @Volatile private var probeJob: Job? = null
     private var lastProbeMs = 0L
@@ -590,6 +593,52 @@ class PlayerRepository(
     /** Сообщает об ошибке, сохраняя курсор для повторного нажатия «Далее». */
     private suspend fun emitArtistLoadError() {
         mutableEvents.emit(PlayerEvent.ShowError("Не удалось загрузить треки артиста. Нажмите «Далее», чтобы повторить"))
+    }
+
+    /** На время прослушивания освобождает звук и восстанавливает исходное воспроизведение. */
+    suspend fun withSourcePreview(block: suspend () -> Unit) = sourcePreviewMutex.withLock {
+        val before = engine.state.value
+        val generation = userQueueGeneration
+        val command = playbackCommandVersion.incrementAndGet()
+        var pausedForPreview = false
+        try {
+            if (before.wantsToPlay) {
+                withContext(kotlinx.coroutines.NonCancellable) {
+                    engine.togglePlayPause()
+                    pausedForPreview = withTimeoutOrNull(2_000L) {
+                        engine.state.first { !it.wantsToPlay }
+                        true
+                    } == true
+                }
+                check(pausedForPreview) { "Основной плеер не приостановился" }
+            }
+            if (generation != userQueueGeneration || command != playbackCommandVersion.get()) return@withLock
+            coroutineScope {
+                val preview = launch { block() }
+                val playback = launch {
+                    engine.state.first { state ->
+                        state.wantsToPlay || state.currentIndex != before.currentIndex ||
+                            state.pendingTrackChange != before.pendingTrackChange ||
+                            generation != userQueueGeneration
+                    }
+                    preview.cancel()
+                }
+                try {
+                    preview.join()
+                } finally {
+                    playback.cancel()
+                }
+            }
+        } finally {
+            withContext(kotlinx.coroutines.NonCancellable) {
+                val current = engine.state.value
+                if (pausedForPreview && !current.wantsToPlay &&
+                    current.pendingTrackChange == before.pendingTrackChange &&
+                    current.currentIndex == before.currentIndex && generation == userQueueGeneration &&
+                    command == playbackCommandVersion.get()
+                ) engine.togglePlayPause()
+            }
+        }
     }
 
     /** Переключает паузу, отменяя ожидающий автоматический переход. */

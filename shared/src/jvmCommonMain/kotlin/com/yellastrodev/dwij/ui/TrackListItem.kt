@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,7 +52,8 @@ enum class TrackSourceIndicator {
  * Универсальная строка трека. В обычном списке показывает доступность и дубли,
  * а в диалоге источников — тип (Яндекс/local/VK), галочку выбора либо номер приоритета.
  * Для каждого явно заданного источника резервирует место и показывает его индикатор.
- * [onLongClick] используется только родительским списком для открытия контекстного меню.
+ * [onLongClick] открывает контекстное меню, [enabled] управляет доступностью жестов строки.
+ * [expandMetadata] показывает полные название и исполнителя и увеличивает высоту по тексту.
  */
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
@@ -64,6 +66,8 @@ fun TrackListItem(
     sourceIndicator: TrackSourceIndicator? = null,
     isSelected: Boolean = false,
     priorityNumber: Int? = null,
+    enabled: Boolean = true,
+    expandMetadata: Boolean = false,
 ) {
     val showMultiplicityIndicator = sourceIndicator == null &&
         !item.isLocalOnlyInLibrary &&
@@ -92,20 +96,23 @@ fun TrackListItem(
         DwijColors.SecondaryText
     }
 
+    val rowHeight = if (expandMetadata) Modifier.heightIn(min = 72.dp) else Modifier.height(72.dp)
+    val rowSize = if (expandMetadata) Modifier.fillMaxWidth() else Modifier.fillMaxSize()
+    val metadataLines = if (expandMetadata) Int.MAX_VALUE else 1
+
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(72.dp)
+            .then(rowHeight)
             .combinedClickable(
+                enabled = enabled,
                 onClick = onClick,
                 onLongClick = onLongClick,
             ),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = rowSize.padding(horizontal = 10.dp, vertical = 6.dp),
         ) {
             TrackCover(
                 coverState = coverState,
@@ -131,14 +138,14 @@ fun TrackListItem(
                     color = titleColor,
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Medium,
-                    maxLines = 1,
+                    maxLines = metadataLines,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = item.artist,
                     color = artistColor,
                     fontSize = 13.sp,
-                    maxLines = 1,
+                    maxLines = metadataLines,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 5.dp),
                 )

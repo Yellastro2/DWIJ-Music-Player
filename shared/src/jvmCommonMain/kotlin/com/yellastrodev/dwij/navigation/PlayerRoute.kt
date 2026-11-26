@@ -50,6 +50,8 @@ import com.yellastrodev.dwij.ui.FullPlayerScreen
 import com.yellastrodev.dwij.ui.FullPlayerUiState
 import com.yellastrodev.dwij.ui.LocalYamLogger
 import com.yellastrodev.dwij.ui.MultiSourceDialog
+import com.yellastrodev.dwij.ui.TrackSourceSearchDialog
+import com.yellastrodev.dwij.ui.missingOnlineSources
 import com.yellastrodev.dwij.ui.TrackSourceIndicator
 import com.yellastrodev.dwij.ui.TrackSourceOptionUiModel
 import kotlinx.coroutines.CancellationException
@@ -81,6 +83,7 @@ fun PlayerRoute(
     val songRepository = component.songRepository
 
     val track by playerModel.track.collectAsState()
+    var sourceSearchSong by remember { mutableStateOf<com.yellastrodev.dwij.data.entities.Song?>(null) }
     val playbackTrack by playerModel.playbackTrack.collectAsState()
     val playerState by playerModel.playerState.collectAsState()
     val isOffline by component.playerRepo.isOffline.collectAsState()
@@ -661,8 +664,21 @@ fun PlayerRoute(
         )
     }
 
-    if (showMultiSourceDialog) {
-        val manageConfirmedSources = confirmedSourceOptions.size > 1
+    sourceSearchSong?.let { original ->
+        TrackSourceSearchDialog(
+            song = original,
+            component = component,
+            onDismiss = { sourceSearchSong = null },
+            onLinked = { sourceSongIds, updated ->
+                playerModel.applyMergedSong(sourceSongIds, updated)
+                sourceSearchSong = null
+            },
+        )
+    }
+
+    val sourceDialogTrack = track
+    if (showMultiSourceDialog && sourceSearchSong == null && sourceDialogTrack != null) {
+        val manageConfirmedSources = confirmedSourceOptions.size > 1 || candidateSourceOptions.isEmpty()
         MultiSourceDialog(
             confirmedOptions = if (manageConfirmedSources) {
                 confirmedSourceOptions
@@ -752,21 +768,23 @@ fun PlayerRoute(
 
                         val (mergedSongId, mergedSong) =
                             withContext(Dispatchers.IO) {
-                                val resultId = songRepository.mergeInstances(
-                                    entriesToMerge.map(
-                                        PlayerSourceDialogEntry::instance,
-                                    ),
-                                )
+                                songMatchRepository.withManualLink {
+                                    val resultId = songRepository.mergeInstances(
+                                        entriesToMerge.map(
+                                            PlayerSourceDialogEntry::instance,
+                                        ),
+                                    )
 
-                                val resultSong = requireNotNull(
-                                    songRepository
-                                        .songsByIds(listOf(resultId))
-                                        .firstOrNull(),
-                                ) {
-                                    "Объединённая Song $resultId не найдена"
+                                    val resultSong = requireNotNull(
+                                        songRepository
+                                            .songsByIds(listOf(resultId))
+                                            .firstOrNull(),
+                                    ) {
+                                        "Объединённая Song $resultId не найдена"
+                                    }
+
+                                    resultId to resultSong
                                 }
-
-                                resultId to resultSong
                             }
 
                         playerModel.applyMergedSong(
@@ -804,6 +822,9 @@ fun PlayerRoute(
             minimumCandidateSelectionCount = if (manageConfirmedSources) 1 else 2,
             isSaving = isMergingSources || isUpdatingSourcePriority,
             errorMessage = mergeSourcesError,
+            onSearchOtherSources = if (sourceDialogTrack.missingOnlineSources().isNotEmpty()) {
+                { sourceSearchSong = sourceDialogTrack }
+            } else null,
         )
     }
 }

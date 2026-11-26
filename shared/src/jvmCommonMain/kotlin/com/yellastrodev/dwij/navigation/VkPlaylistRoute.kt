@@ -30,6 +30,8 @@ import com.yellastrodev.dwij.ui.toImageBitmapOrNull
 import com.yellastrodev.vkmusicsdk.VkAudio
 import com.yellastrodev.vkmusicsdk.VkPlaylist
 import kotlinx.coroutines.launch
+import com.yellastrodev.dwij.data.entities.Song
+import com.yellastrodev.dwij.ui.CollectionTrackSourcesDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.pluralStringResource
@@ -75,6 +77,7 @@ internal fun VkPlaylistRoute(
     val loadError = state.error?.vkPlaylistMessage()
     var savedIds by remember { mutableStateOf(emptySet<String>()) }
     val scope = rememberCoroutineScope()
+    var sourceSong by remember { mutableStateOf<Song?>(null) }
     val snackbar = remember { SnackbarHostState() }
     var cover by remember(playlistId, sessionRevision) { mutableStateOf<ImageBitmap?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -174,6 +177,20 @@ internal fun VkPlaylistRoute(
             },
             trackContextMenuContent = { index, item, dismiss ->
                 val audio = tracks.getOrNull(index)
+                DropdownMenuItem(
+                    text = { Text(stringResource(Res.string.multi_source_confirmed_title)) },
+                    enabled = audio != null,
+                    onClick = {
+                        dismiss()
+                        audio?.let { track ->
+                            scope.launch {
+                                sourceSong = withContext(Dispatchers.IO) {
+                                    component.songRepository.songsForVkTracks(listOf(track)).firstOrNull()
+                                }
+                            }
+                        }
+                    },
+                )
                 DropdownMenuItem(text = { Text(stringResource(when {
                     item.isSavedLocally -> Res.string.track_saved_locally
                     item.isSavingLocally -> Res.string.track_saving_locally
@@ -222,6 +239,9 @@ internal fun VkPlaylistRoute(
             modifier = Modifier.fillMaxSize(),
         )
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(12.dp))
+    }
+    sourceSong?.let { song ->
+        CollectionTrackSourcesDialog(song, component, onDismiss = { sourceSong = null })
     }
     val currentPlaylist = playlist
     removeTrack?.let { audio ->

@@ -20,8 +20,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -37,6 +39,25 @@ class SongMatchRepository(
 
 
     private val scanMutex = Mutex()
+    private val scanPause = MutableStateFlow(ScanPause())
+
+    /** Прерывает проход скана перед ручной записью и возобновляет его после всех ожидающих слияний. */
+    internal suspend fun <T> withManualLink(block: suspend () -> T): T =
+        withScanPaused { scanMutex.withLock { block() } }
+
+    /** Учитывает перекрывающиеся операции, включая отмену во время ожидания блокировки. */
+    private suspend fun <T> withScanPaused(block: suspend () -> T): T {
+        scanPause.update { it.copy(requests = it.requests + 1) }
+        try {
+            return block()
+        } finally {
+            scanPause.update { it.copy(requests = it.requests - 1, revision = it.revision + 1) }
+        }
+    }
+
+    /** Проверяет текущую настройку и запрос паузы даже между двумя сравнениями. */
+    private fun canScan(): Boolean = scanEnabled.value && scanPause.value.requests == 0
+
     private val mutableScanEnabled = MutableStateFlow(settings?.getBoolean(KEY_SCAN_ENABLED) ?: true)
     val scanEnabled = mutableScanEnabled.asStateFlow()
     private val mutableAutoMergeEnabled = MutableStateFlow(settings?.getBoolean(KEY_AUTO_MERGE_ENABLED) ?: false)
@@ -80,12 +101,15 @@ class SongMatchRepository(
     ): Job = scope.launch(Dispatchers.IO) {
         launch {
             autoMergeEnabled.collectLatest { enabled ->
-                if (enabled) pendingCandidates.collect { mergePendingCandidates(it, onMerged) }
+                if (enabled) pendingCandidates.collect { candidates ->
+                    if (candidates.isNotEmpty()) mergePendingCandidates(candidates, onMerged)
+                }
             }
         }
         launch {
-            scanEnabled.collectLatest { enabled ->
-                if (enabled) {
+            combine(scanEnabled, scanPause) { enabled, pause -> enabled to pause }
+                .collectLatest { (enabled, pause) ->
+                    if (!enabled || pause.requests != 0) return@collectLatest
                     songDao.observeUnscannedSongCount(CURRENT_RESOLVER_VERSION)
                         .distinctUntilChanged()
                         .filter { count -> count > 0 }
@@ -94,46 +118,48 @@ class SongMatchRepository(
                             scanUnprocessedSongs()
                         }
                 }
-            }
         }
     }
 
-    /** Сериализует слияние со сканом, повторно проверяет решения в Room и обновляет текущую очередь после каждой пары. */
+    /** Приостанавливает скан на время автослияния, повторно проверяет решения в Room и обновляет текущую очередь после каждой пары. */
     private suspend fun mergePendingCandidates(
         candidates: List<SongMatchCandidateEntity>,
         onMerged: suspend (Set<String>, String) -> Unit,
-    ) = scanMutex.withLock {
+    ) = withScanPaused {
         candidates.forEach { candidate ->
             currentCoroutineContext().ensureActive()
-            if (!autoMergeEnabled.value) return@withLock
-            try {
-                val songs = songDao.getSongs(listOf(candidate.firstSongId, candidate.secondSongId))
-                    .associateBy { it.song.songId }
-                val first = songs[candidate.firstSongId] ?: return@forEach
-                val second = songs[candidate.secondSongId] ?: return@forEach
-                val includesVk = (first.instances + second.instances).any { it.source == MusicSource.VK.name }
-                if (resolver.compare(first.song, second.song, checkRecording = includesVk) == null) return@forEach
-                val mergedId = matchDao.mergePendingCandidate(songDao, candidate.firstSongId, candidate.secondSongId)
-                    ?: return@forEach
-                withContext(NonCancellable) {
-                    onMerged(setOf(candidate.firstSongId, candidate.secondSongId), mergedId)
+            if (!autoMergeEnabled.value) return@withScanPaused
+            scanMutex.withLock {
+                if (!autoMergeEnabled.value) return@withLock
+                try {
+                    val songs = songDao.getSongs(listOf(candidate.firstSongId, candidate.secondSongId))
+                        .associateBy { it.song.songId }
+                    val first = songs[candidate.firstSongId] ?: return@withLock
+                    val second = songs[candidate.secondSongId] ?: return@withLock
+                    val includesVk = (first.instances + second.instances).any { it.source == MusicSource.VK.name }
+                    if (resolver.compare(first.song, second.song, checkRecording = includesVk) == null) return@withLock
+                    val mergedId = matchDao.mergePendingCandidate(songDao, candidate.firstSongId, candidate.secondSongId)
+                        ?: return@withLock
+                    withContext(NonCancellable) {
+                        onMerged(setOf(candidate.firstSongId, candidate.secondSongId), mergedId)
+                    }
+                    logger.info(TAG, "[mergePendingCandidates] Объединены варианты ${candidate.firstSongId} и ${candidate.secondSongId}")
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    logger.error(TAG, "[mergePendingCandidates] Не удалось объединить варианты ${candidate.firstSongId} и ${candidate.secondSongId}", error)
                 }
-                logger.info(TAG, "[mergePendingCandidates] Объединены варианты ${candidate.firstSongId} и ${candidate.secondSongId}")
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                logger.error(TAG, "[mergePendingCandidates] Не удалось объединить варианты ${candidate.firstSongId} и ${candidate.secondSongId}", error)
             }
         }
     }
 
-    /** Сканирует только при включённой настройке; незавершённые песни остаются для следующего запуска. */
+    /** Помечает обработанные песни и прерывает проход при паузе, оставляя остальные для нового снимка. */
     suspend fun scanUnprocessedSongs(): Unit = scanMutex.withLock {
-        if (!scanEnabled.value) return@withLock
+        if (!canScan()) return@withLock
         var scannedCount = 0
         while (true) {
             currentCoroutineContext().ensureActive()
-            if (!scanEnabled.value) return@withLock
+            if (!canScan()) return@withLock
             val batch = songDao.getUnscannedSongs(
                 resolverVersion = CURRENT_RESOLVER_VERSION,
                 limit = SCAN_BATCH_SIZE,
@@ -150,9 +176,9 @@ class SongMatchRepository(
             batch.forEach { song ->
                 try {
                     currentCoroutineContext().ensureActive()
-                    if (!scanEnabled.value) return@withLock
+                    if (!canScan()) return@withLock
                     val search = findCandidates(song, allSongs) ?: return@withLock
-                    if (!scanEnabled.value) return@withLock
+                    if (!canScan()) return@withLock
                     batchComparisonCount += search.comparedPairs
                     batchCandidateCount += search.candidates.size
                     matchDao.replacePendingCandidatesForSong(
@@ -204,7 +230,7 @@ class SongMatchRepository(
         var comparedPairs = 0
         val candidates = allSongs.mapNotNull { other ->
             currentCoroutineContext().ensureActive()
-            if (!scanEnabled.value) return null
+            if (!canScan()) return null
             if (song.song.songId == other.song.songId || !isCrossSourcePair(song, other)) {
                 return@mapNotNull null
             }
@@ -254,6 +280,9 @@ class SongMatchRepository(
         } else {
             secondSongId to firstSongId
         }
+
+    /** Ревизия будит скан и после паузы, которую StateFlow мог свернуть в одно обновление. */
+    private data class ScanPause(val requests: Int = 0, val revision: Long = 0)
 
     companion object {
         const val CURRENT_RESOLVER_VERSION = 2
