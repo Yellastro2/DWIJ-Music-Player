@@ -16,6 +16,7 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -23,6 +24,7 @@ import androidx.compose.material3.TextButton
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.yellastrodev.dwij.BuildConfig
 import com.yellastrodev.dwij.models.AndroidPlayerCoverLoader
 import com.yellastrodev.dwij.models.PlayerModel
 import com.yellastrodev.dwij.navigation.AndroidDwijAppPlatform
@@ -31,6 +33,7 @@ import com.yellastrodev.dwij.ui.theme.DwijTheme
 import com.yellastrodev.dwij.ui.LocalYamLogger
 import com.yellastrodev.dwij.yApplication
 import com.yellastrodev.dwij.R
+import com.google.firebase.analytics.FirebaseAnalytics
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 
@@ -39,6 +42,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
  *
  * Создаёт Android-зависимости, задаёт фиксированную тему и запускает shared Compose-корень.
  * Передаёт входящие ссылки на треки и альбомы в shared-навигацию.
+ * Отправляет просмотры Compose-экранов в Firebase Analytics через callback общего навигатора.
  */
 class MainActivity : ComponentActivity() {
 
@@ -78,7 +82,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Принимает стартовый intent и задаёт тему всему Compose-содержимому, включая системные подсказки приложения. */
+    /** Отправляет screen_view с безопасным именем, если сборка настроена для Firebase. */
+    private fun reportScreenView(screenName: String) {
+        if (!BuildConfig.FIREBASE_ANALYTICS_ENABLED) return
+
+        FirebaseAnalytics.getInstance(applicationContext).logEvent(
+            FirebaseAnalytics.Event.SCREEN_VIEW,
+            Bundle().apply {
+                putString(FirebaseAnalytics.Param.SCREEN_NAME, screenName)
+                putString(FirebaseAnalytics.Param.SCREEN_CLASS, "MainActivity")
+            },
+        )
+    }
+
+    /** Задаёт тему, принимает стартовый intent и подключает аналитику Compose-навигации. */
     override fun onCreate(
         savedInstanceState: Bundle?,
     ) {
@@ -133,6 +150,7 @@ class MainActivity : ComponentActivity() {
                             yandexTrackRequestFlow,
                         yandexAlbumRequests =
                             yandexAlbumRequestFlow,
+                        onScreenViewed = remember { this@MainActivity::reportScreenView },
                     )
                     if (showYandexLinksDialog) {
                         AlertDialog(

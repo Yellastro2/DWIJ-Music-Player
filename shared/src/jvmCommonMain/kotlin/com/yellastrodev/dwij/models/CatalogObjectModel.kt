@@ -15,12 +15,15 @@ import com.yellastrodev.dwij.data.repo.CatalogRepository
 import com.yellastrodev.dwij.data.repo.CoverData
 import com.yellastrodev.dwij.data.repo.CoverRepository
 import com.yellastrodev.dwij.data.repo.PlayerRepository
+import com.yellastrodev.dwij.data.repo.artistTrackKey
 import com.yellastrodev.yamusicsdk.entities.CoverSize
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlin.reflect.KClass
@@ -31,7 +34,7 @@ enum class CatalogObjectKind {
     Album,
 }
 
-/** Единый UI-снимок минимальных экранов артиста и альбома. */
+/** Снимок экрана каталога с отдельным состоянием подгрузки треков артиста. */
 @Immutable
 data class CatalogObjectUiState(
     val kind: CatalogObjectKind = CatalogObjectKind.Artist,
@@ -50,9 +53,12 @@ data class CatalogObjectUiState(
     val tracks: List<Song> = emptyList(),
     val isLoading: Boolean = false,
     val error: DataError? = null,
+    val nextArtistTrackPage: Int? = null,
+    val isLoadingArtistTracks: Boolean = false,
+    val artistTracksError: DataError? = null,
 )
 
-/** Загружает один объект каталога и управляет его очередью воспроизведения. */
+/** Загружает объект каталога и страницы треков артиста, запускает воспроизведение списка. */
 class CatalogObjectModel(
     private val catalogRepository: CatalogRepository,
     private val coverRepository: CoverRepository,
@@ -60,17 +66,25 @@ class CatalogObjectModel(
 ) : ViewModel() {
     private val _state = MutableStateFlow(CatalogObjectUiState())
     val state: StateFlow<CatalogObjectUiState> = _state.asStateFlow()
+    private var objectLoad: Job? = null
+    private var artistTracksLoad: Job? = null
 
+    /** Загружает карточку, отменяя предыдущую загрузку карточки и подгрузку треков. */
     fun load(kind: CatalogObjectKind, externalId: Int, force: Boolean = false) {
-        if (!force && _state.value.externalId == externalId && _state.value.kind == kind) return
+        val current = _state.value
+        val sameObject = current.externalId == externalId && current.kind == kind
+        if (!force && sameObject) return
 
-        _state.value = _state.value.copy(
+        objectLoad?.cancel()
+        artistTracksLoad?.cancel()
+        _state.value = (if (sameObject) current else CatalogObjectUiState()).copy(
             kind = kind,
             externalId = externalId,
             isLoading = true,
             error = null,
+            isLoadingArtistTracks = false,
         )
-        viewModelScope.launch {
+        objectLoad = viewModelScope.launch {
             val result: DataResult<Any> = try {
                 when (kind) {
                     CatalogObjectKind.Artist -> catalogRepository.artist(externalId)
@@ -81,6 +95,7 @@ class CatalogObjectModel(
             } catch (error: Exception) {
                 DataResult.Failure(DataError.Unknown(error))
             }
+            ensureActive()
             _state.value = when (result) {
                 is DataResult.Success -> when (val page = result.value) {
                     is CatalogArtistPage -> page.toUiState(externalId)
@@ -92,6 +107,41 @@ class CatalogObjectModel(
                     error = result.error,
                 )
             }
+            if (result is DataResult.Success && kind == CatalogObjectKind.Artist) {
+                loadMoreArtistTracks()
+            }
+        }
+    }
+
+    /** Добавляет следующую страницу после популярных треков либо повторяет ту же страницу. */
+    fun loadMoreArtistTracks() {
+        val current = _state.value
+        val artistId = current.externalId ?: return
+        val page = current.nextArtistTrackPage ?: return
+        if (current.isLoading || current.isLoadingArtistTracks) return
+
+        _state.value = current.copy(isLoadingArtistTracks = true, artistTracksError = null)
+        artistTracksLoad = viewModelScope.launch {
+            val result = try {
+                catalogRepository.artistTracks(artistId, page)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                DataResult.Failure(DataError.Unknown(error))
+            }
+            ensureActive()
+            val latest = _state.value
+            _state.value = when (result) {
+                is DataResult.Success -> latest.copy(
+                    tracks = (latest.tracks + result.value.tracks).distinctBy(Song::artistTrackKey),
+                    nextArtistTrackPage = result.value.nextPage,
+                    isLoadingArtistTracks = false,
+                )
+                is DataResult.Failure -> latest.copy(
+                    isLoadingArtistTracks = false,
+                    artistTracksError = result.error,
+                )
+            }
         }
     }
 
@@ -100,19 +150,22 @@ class CatalogObjectModel(
         load(_state.value.kind, externalId, force = true)
     }
 
+    /** Запускает выбранную строку и передаёт плееру курсор каталога на момент запуска. */
     fun play(index: Int): Boolean {
-        val songs = _state.value.tracks
+        val current = _state.value
+        val songs = current.tracks
+        val externalId = current.externalId ?: return false
         if (index !in songs.indices) return false
+        val tracklist = CatalogTracklist(current.kind, externalId, current.title)
+        val catalog = catalogRepository
         viewModelScope.launch {
-            playerRepository.playQueue(
-                songs = songs,
-                startIndex = index,
-                tracklist = CatalogTracklist(
-                    kind = _state.value.kind,
-                    externalId = requireNotNull(_state.value.externalId),
-                    title = _state.value.title,
-                ),
-            )
+            if (current.kind == CatalogObjectKind.Artist) {
+                playerRepository.playArtistQueue(songs, index, tracklist, current.nextArtistTrackPage) { page ->
+                    catalog.artistTracks(externalId, page)
+                }
+            } else {
+                playerRepository.playQueue(songs, index, tracklist)
+            }
         }
         return true
     }
@@ -143,6 +196,7 @@ class CatalogObjectModel(
         }
     }
 
+    /** Показывает популярные треки сразу и открывает подгрузку каталога с нулевой страницы. */
     private fun CatalogArtistPage.toUiState(externalId: Int) = CatalogObjectUiState(
         kind = CatalogObjectKind.Artist,
         externalId = externalId,
@@ -153,7 +207,8 @@ class CatalogObjectModel(
         trackCount = trackCount,
         lastMonthListeners = lastMonthListeners,
         metadataSource = metadataSource,
-        tracks = tracks,
+        tracks = tracks.distinctBy(Song::artistTrackKey),
+        nextArtistTrackPage = 0,
     )
 
     private fun CatalogAlbumPage.toUiState(externalId: Int) = CatalogObjectUiState(
@@ -189,7 +244,7 @@ class CatalogObjectModel(
     }
 }
 
-/** Контекст ЯМ-каталога; продолжение волной разрешено только для поддерживаемого seed артиста. */
+/** Контекст ЯМ-каталога с продолжением очереди и перемешиванием каталога артиста. */
 private data class CatalogTracklist(
     val kind: CatalogObjectKind,
     val externalId: Int,
@@ -202,6 +257,8 @@ private data class CatalogTracklist(
     /** Для артиста существует поддерживаемый rotor seed; внутренний список альбома его не задаёт. */
     override fun yandexWaveSeed(): String? =
         if (kind == CatalogObjectKind.Artist && externalId > 0) "artist:$externalId" else null
+    /** Добавляет треки артиста в случайные позиции среди ожидающих. */
+    override fun interleaveAppendedTracks(): Boolean = kind == CatalogObjectKind.Artist
     /** Каталог содержит сущности ЯМ. */
     override fun originOf(songId: String): com.yellastrodev.dwij.data.entities.MusicSource =
         com.yellastrodev.dwij.data.entities.MusicSource.YANDEX

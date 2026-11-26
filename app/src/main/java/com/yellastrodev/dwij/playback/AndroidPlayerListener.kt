@@ -64,6 +64,7 @@ class AndroidPlayerListener(
         loadArtwork(mediaItem)
     }
 
+    /** Публикует конец очереди по порядку Media3, включая конец shuffle. */
     override fun onPlaybackStateChanged(playbackState: Int) {
         stateStore.setPlayback(
             isPlaying = player.isPlaying,
@@ -83,7 +84,7 @@ class AndroidPlayerListener(
         )
 
         val playlistFinished =
-            player.currentMediaItemIndex == player.mediaItemCount - 1 &&
+            player.mediaItemCount > 0 && !player.hasNextMediaItem() &&
                     player.repeatMode == Player.REPEAT_MODE_OFF
 
         if (playlistFinished) {

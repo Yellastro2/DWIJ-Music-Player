@@ -273,6 +273,7 @@ class DesktopPlayerEngine(
         }
     }
 
+    /** Дописывает треки и обновляет уже определённый случайный порядок. */
     override suspend fun appendTracks(
         tracks: List<PlaybackTrack>,
         tracklist: dTracklist?,
@@ -291,6 +292,7 @@ class DesktopPlayerEngine(
                             previousQueueSize,
                         newQueueSize =
                             queue.size,
+                        interleave = tracklist?.interleaveAppendedTracks() == true,
                     )
                 }
             }

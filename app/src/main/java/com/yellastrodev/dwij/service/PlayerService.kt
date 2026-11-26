@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -11,6 +12,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.ShuffleOrder
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -34,6 +36,7 @@ import com.yellastrodev.dwij.playback.BluetoothPlaybackResume
 import com.yellastrodev.dwij.playback.PlaybackResumeStore
 import com.yellastrodev.dwij.playback.AndroidPlaybackRecovery
 import com.yellastrodev.dwij.playback.AndroidPlaybackLoadErrorPolicy
+import com.yellastrodev.dwij.playback.interleaveShuffleTracks
 import com.yellastrodev.dwij.playback.PlaybackStateStore
 import com.yellastrodev.dwij.utils.PlayerEvent
 import com.yellastrodev.dwij.utils.PlayerState
@@ -56,13 +59,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.random.Random
 
-/** Владеет Media3, восстановлением очереди и source-ID реакциями, включая временные подборки. */
+/** Владеет Media3, восстановлением очереди, порядком треков артиста и реакциями. */
 @OptIn(UnstableApi::class)
 class PlayerService : MediaSessionService() {
 
     lateinit var player: ExoPlayer
         private set
+    private var artistShuffleQueue = false
+    private var artistShuffleOrder = emptyList<Int>()
+    private var artistShufflePlayedThrough = -1
 
     private lateinit var mediaSession: MediaSession
     private lateinit var playerListener: AndroidPlayerListener
@@ -242,6 +249,22 @@ class PlayerService : MediaSessionService() {
             .build()
 
         player.addListener(streamingListener)
+        player.addListener(object : Player.Listener {
+            /** Сохраняет границу истории, даже если пользователь вернулся назад. */
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (mediaItem != null && player.shuffleModeEnabled) {
+                    artistShufflePlayedThrough = maxOf(
+                        artistShufflePlayedThrough,
+                        artistShuffleOrder.indexOf(player.currentMediaItemIndex),
+                    )
+                }
+            }
+
+            /** Фиксирует выбранный сейчас трек в начале нового случайного порядка. */
+            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+                resetArtistShuffle(artistShuffleQueue)
+            }
+        })
         bluetoothPlaybackResume = BluetoothPlaybackResume(this, player)
         playbackRecovery = AndroidPlaybackRecovery(
             player = player,
@@ -377,10 +400,12 @@ class PlayerService : MediaSessionService() {
     }
 
     /** Новая очередь отменяет все отложенные повторы прежнего трека. */
+    /** Устанавливает очередь и при shuffle запускает каталог артиста с выбранного трека. */
     fun playQueue(
         tracks: List<MediaItem>,
         startIndex: Int = 0,
         autoPlay: Boolean = true,
+        artistShuffle: Boolean = false,
     ) {
         playbackRecovery.onUserCommand()
         stateStore.beginTrackChange(
@@ -388,6 +413,7 @@ class PlayerService : MediaSessionService() {
             wantsToPlay = autoPlay,
         )
         player.setMediaItems(tracks, startIndex, 0L)
+        resetArtistShuffle(artistShuffle)
         player.playWhenReady = autoPlay
         resumeStore.save(player)
         player.prepare()
@@ -397,6 +423,7 @@ class PlayerService : MediaSessionService() {
     /**
      * Восстанавливает очередь после пересоздания сервиса без автоматического
      * запуска звука. Исходная пользовательская команда выполняется отдельно.
+     * При восстановлении в том же процессе движок передаёт тип очереди.
      */
     fun restoreQueue(
         tracks: List<MediaItem>,
@@ -405,6 +432,7 @@ class PlayerService : MediaSessionService() {
         durationMs: Long,
         shuffleEnabled: Boolean,
         repeatMode: Int,
+        artistShuffle: Boolean = false,
     ) {
         if (tracks.isEmpty()) {
             return
@@ -422,6 +450,7 @@ class PlayerService : MediaSessionService() {
             safeIndex,
             safePositionMs,
         )
+        resetArtistShuffle(artistShuffle)
         resumeStore.save(player)
         player.prepare()
 
@@ -445,8 +474,32 @@ class PlayerService : MediaSessionService() {
         )
     }
 
+    /** Дописывает MediaItem и вставляет новые индексы каталога в будущий shuffle-порядок. */
     fun addTracks(items: List<MediaItem>) {
+        val previousSize = player.mediaItemCount
+        val order = artistShuffleOrder
         player.addMediaItems(items)
+        if (player.shuffleModeEnabled && order.isNotEmpty() && order.size == previousSize) {
+            artistShuffleOrder = interleaveShuffleTracks(
+                order, artistShufflePlayedThrough, previousSize until player.mediaItemCount,
+            )
+            player.setShuffleOrder(ShuffleOrder.DefaultShuffleOrder(artistShuffleOrder.toIntArray(), Random.nextLong()))
+        }
+    }
+
+    /** Пересоздаёт порядок после замены списка или включения случайного режима. */
+    fun resetArtistShuffle(enabled: Boolean) {
+        artistShuffleQueue = enabled
+        val currentIndex = player.currentMediaItemIndex
+        if (!enabled || !player.shuffleModeEnabled || currentIndex !in 0 until player.mediaItemCount) {
+            artistShuffleOrder = emptyList()
+            artistShufflePlayedThrough = -1
+            return
+        }
+        artistShuffleOrder = listOf(currentIndex) +
+            (0 until player.mediaItemCount).filter { it != currentIndex }.shuffled()
+        artistShufflePlayedThrough = 0
+        player.setShuffleOrder(ShuffleOrder.DefaultShuffleOrder(artistShuffleOrder.toIntArray(), Random.nextLong()))
     }
 
     /** Пустой офлайн снимает pending-переход и удаляет сетевую очередь также из MediaSession. */

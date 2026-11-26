@@ -28,7 +28,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/** Связывает общий PlayerEngine с сервисом, recovery-политикой и восстановлением очереди без сброса звука. */
+/** Связывает общий PlayerEngine с сервисом, восстановлением очереди и shuffle каталога. */
 class AndroidPlayerEngine(
     context: Context,
     private val scope: CoroutineScope,
@@ -68,6 +68,8 @@ class AndroidPlayerEngine(
         player.removeMediaItems(0, oldIndex)
         player.addMediaItems(0, items.take(newIndex))
         player.addMediaItems(items.drop(newIndex + 1))
+        artistShuffleQueue = tracklist?.interleaveAppendedTracks() == true
+        active.resetArtistShuffle(artistShuffleQueue)
         playbackSnapshot = PlaybackSnapshot(items)
         true
     }
@@ -83,6 +85,7 @@ class AndroidPlayerEngine(
 
     @Volatile
     private var shuffleEnabled = false
+    @Volatile private var artistShuffleQueue = false
 
     @Volatile
     private var repeatMode = Player.REPEAT_MODE_OFF
@@ -163,7 +166,7 @@ class AndroidPlayerEngine(
         }
     }
 
-    /** Подписывается на сервис; снимок из памяти применяет только к ещё пустому плееру. */
+    /** Подключает новый сервис и восстанавливает политику текущей очереди в том же процессе. */
     private fun restoreSnapshotIfNeeded(
         playerService: PlayerService,
     ) {
@@ -174,7 +177,10 @@ class AndroidPlayerEngine(
             startSubscriptionsIfNeeded(playerService)
         }
         val snapshot = playbackSnapshot ?: return
-        if (playerService.player.mediaItemCount > 0) return
+        if (playerService.player.mediaItemCount > 0) {
+            if (artistShuffleQueue) playerService.resetArtistShuffle(true)
+            return
+        }
 
         playerService.restoreQueue(
             tracks = snapshot.items,
@@ -183,6 +189,7 @@ class AndroidPlayerEngine(
             durationMs = currentState.duration,
             shuffleEnabled = shuffleEnabled,
             repeatMode = repeatMode,
+            artistShuffle = artistShuffleQueue,
         )
 
         Log.d(
@@ -267,6 +274,7 @@ class AndroidPlayerEngine(
     }
 
     /** Устанавливает очередь и сохраняет паузу, если смена режима не должна запускать звук. */
+    /** Передаёт сервису новый список и нужную политику перемешивания добавлений. */
     override suspend fun setQueue(
         tracks: List<PlaybackTrack>,
         startIndex: Int,
@@ -287,10 +295,12 @@ class AndroidPlayerEngine(
         )
 
         withContext(Dispatchers.Main) {
+            artistShuffleQueue = tracklist?.interleaveAppendedTracks() == true
             requireNotNull(service).playQueue(
                 tracks = mediaItems,
                 startIndex = startIndex,
                 autoPlay = autoPlay,
+                artistShuffle = artistShuffleQueue,
             )
         }
     }

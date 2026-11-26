@@ -17,6 +17,9 @@ interface dTracklist {
     /** Сохраняет порядок очереди, когда он является частью смысла подборки. */
     fun preserveQueueOrder(): Boolean = false
 
+    /** Размещает новые элементы среди ожидающих, когда движок перемешивает эту очередь. */
+    fun interleaveAppendedTracks(): Boolean = false
+
     /** Запрещает сетевые экземпляры и восстановление онлайн для явно выбранной локальной коллекции. */
     fun offlineOnly(): Boolean = false
 

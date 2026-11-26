@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -59,6 +60,7 @@ import org.jetbrains.compose.resources.stringResource
  * Постоянные настройки и авторизация принадлежат shared-компоненту.
  * Платформа используется только для StatFs, Intent, clipboard и lifecycle.
  * Закрытие окна OAuth скрывает только интерфейс, не отменяя текущий вход.
+ * Код Яндекса и ссылку на страницу входа можно скопировать отдельными кнопками с подтверждением в окне.
  * Размер и очистка постоянного хранения включают Яндекс и VK, независимо от LRU-кеша.
  * Кнопка на карточке открывает подтверждение; удаление запускается только после согласия.
  * Ошибки VK OAuth выводятся в общий snackbar поверх прокручиваемых настроек.
@@ -1333,6 +1335,11 @@ fun SettingsRoute(
 
     if (showAuthDialog && isAuthInProgress) {
         val code = deviceCode
+        var copyFeedback by remember(code?.userCode) { mutableStateOf<String?>(null) }
+        val copyErrorMessage = stringResource(Res.string.auth_code_copy_error)
+        val linkCopiedMessage = stringResource(Res.string.auth_link_copied)
+        val linkCopyErrorMessage = stringResource(Res.string.auth_link_copy_error)
+        val linkClipboardLabel = stringResource(Res.string.auth_link_clip_label)
         AlertDialog(
             onDismissRequest = {
                 showAuthDialog = false
@@ -1345,17 +1352,58 @@ fun SettingsRoute(
                 )
             },
             text = {
-                Text(
-                    when {
-                        isSavingAccount -> stringResource(Res.string.auth_saving_account)
-                        code == null -> stringResource(Res.string.auth_requesting_code)
-                        else -> stringResource(
-                            Res.string.auth_device_message,
-                            code.verificationUrl,
-                            code.userCode,
-                        )
-                    },
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        when {
+                            isSavingAccount -> stringResource(Res.string.auth_saving_account)
+                            code == null -> stringResource(Res.string.auth_requesting_code)
+                            else -> stringResource(
+                                Res.string.auth_device_message,
+                                code.verificationUrl,
+                                code.userCode,
+                            )
+                        },
+                    )
+                    if (code != null && !isSavingAccount) {
+                        OutlinedButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                try {
+                                    platform.copyText(clipboardLabel, code.userCode)
+                                    copyFeedback = codeCopiedMessage
+                                } catch (error: Exception) {
+                                    logger.error(
+                                        TAG,
+                                        "[copyAuthorizationCode] Не удалось скопировать код авторизации",
+                                        error,
+                                    )
+                                    copyFeedback = copyErrorMessage
+                                }
+                            },
+                        ) {
+                            Text(stringResource(Res.string.auth_copy_code))
+                        }
+                        OutlinedButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                try {
+                                    platform.copyText(linkClipboardLabel, code.verificationUrl)
+                                    copyFeedback = linkCopiedMessage
+                                } catch (error: Exception) {
+                                    logger.error(
+                                        TAG,
+                                        "[copyAuthorizationLink] Не удалось скопировать ссылку для входа",
+                                        error,
+                                    )
+                                    copyFeedback = linkCopyErrorMessage
+                                }
+                            },
+                        ) {
+                            Text(stringResource(Res.string.auth_copy_link))
+                        }
+                        copyFeedback?.let { message -> Text(message) }
+                    }
+                }
             },
             confirmButton = {
                 if (code != null && !isSavingAccount) {

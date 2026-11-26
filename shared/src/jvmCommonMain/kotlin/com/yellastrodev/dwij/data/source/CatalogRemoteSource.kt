@@ -4,6 +4,7 @@ import com.yellastrodev.dwij.data.DataResult
 import com.yellastrodev.dwij.data.toDataError
 import com.yellastrodev.yamusicsdk.YamApiClient
 import com.yellastrodev.yamusicsdk.artists.ArtistBriefInfo
+import com.yellastrodev.yamusicsdk.artists.ArtistTracksPage
 import com.yellastrodev.yamusicsdk.entities.YaAlbum
 import com.yellastrodev.yamusicsdk.network.YamResult
 
@@ -13,6 +14,13 @@ class CatalogRemoteSource(
 ) {
     suspend fun artist(artistId: Int): DataResult<ArtistBriefInfo> =
         when (val result = client.artistBriefInfo(artistId)) {
+            is YamResult.Success -> DataResult.Success(result.value)
+            is YamResult.Failure -> DataResult.Failure(result.error.toDataError())
+        }
+
+    /** Загружает страницу треков и переводит ошибку SDK в ошибку приложения. */
+    suspend fun artistTracks(artistId: Int, page: Int): DataResult<ArtistTracksPage> =
+        when (val result = client.artistTracks(artistId, page)) {
             is YamResult.Success -> DataResult.Success(result.value)
             is YamResult.Failure -> DataResult.Failure(result.error.toDataError())
         }

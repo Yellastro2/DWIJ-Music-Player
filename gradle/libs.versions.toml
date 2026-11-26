@@ -1,4 +1,5 @@
 [versions]
+firebaseBom = "33.16.0"
 agp = "9.0.0"
 componentsResources = "1.9.3"
 kotlin = "2.1.20"
@@ -19,6 +20,8 @@ uiAndroid = "1.11.4"
 workRuntimeKtx = "2.11.2"
 
 [libraries]
+firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebaseBom" }
+firebase-analytics = { module = "com.google.firebase:firebase-analytics" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref = "roomRuntime" }
 androidx-room-runtime = { module = "androidx.room:room-runtime", version.ref = "roomRuntime" }

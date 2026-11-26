@@ -75,7 +75,10 @@ class WaveRepository(
         }
     }
 
-    /** Не посылает внутренние очереди в rotor; отсутствие контекста означает личную волну. */
+    /**
+     * Не посылает внутренние очереди в rotor; отсутствие контекста означает личную волну.
+     * Сохраняет готовое название станции без дополнительного слова «волна».
+     */
     suspend fun getWave(dTracklist: dTracklist?): List<Song> {
         val seed = if (dTracklist == null) "user:onyourwave"
             else dTracklist.yandexWaveSeed()?.takeIf(String::isNotBlank) ?: return emptyList()
@@ -89,11 +92,11 @@ class WaveRepository(
                     tracks = result.value.tracks.map { TrackShort(it.id) }
                 )
                 curentWave?.let { remote.sendWaveStarted(it) }
-                dTracklist?. let{
-                    curentWave!!.title =  "${it.getDTitle()} волна"
-                } ?: run {
-                    curentWave!!.title =  "Волна"
-
+                curentWave!!.title = when {
+                    seed == "user:onyourwave" -> "Моя волна"
+                    dTracklist is StationWaveSeed || dTracklist is dYaWave -> dTracklist.getDTitle()
+                    dTracklist != null -> "${dTracklist.getDTitle()} волна"
+                    else -> "Волна"
                 }
                 val trackList = result.value.tracks.map { it.toEntity() }
                 trackRepository.putTracks(trackList)

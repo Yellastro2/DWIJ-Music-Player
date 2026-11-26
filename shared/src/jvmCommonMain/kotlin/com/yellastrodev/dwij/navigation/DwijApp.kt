@@ -31,9 +31,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.lifecycle.Lifecycle
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -82,6 +84,7 @@ import org.jetbrains.compose.resources.stringResource
  * Радиальное меню имеет отдельный экран настройки с раскрытым предпросмотром.
  * Временный режим назначения сохраняет выбор или добавляет сектор без воспроизведения и возвращает к настройкам.
  * Центральная кнопка выбирает назначение тем же путём, отдельно от списка секторов.
+ * Сообщает платформе безопасное имя экрана при его переходе в RESUMED, включая возврат назад.
  */
 @Composable
 fun DwijApp(
@@ -92,10 +95,19 @@ fun DwijApp(
     playerOpenRequests: Flow<Unit> = emptyFlow(),
     yandexTrackRequests: Flow<String> = emptyFlow(),
     yandexAlbumRequests: Flow<Int> = emptyFlow(),
+    onScreenViewed: (String) -> Unit = {},
 ) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
+    val screenViewReporter by rememberUpdatedState(onScreenViewed)
+    LaunchedEffect(backStackEntry) {
+        val entry = backStackEntry ?: return@LaunchedEffect
+        val screenName = entry.analyticsScreenName() ?: return@LaunchedEffect
+        entry.lifecycle.currentStateFlow.collect { state ->
+            if (state == Lifecycle.State.RESUMED) screenViewReporter(screenName)
+        }
+    }
     var selectingRadialSlot by rememberSaveable { mutableStateOf<Int?>(null) }
     val radialTargets by component.radialMenuSettingsStore.targets.collectAsState()
     val radialItems = homeRadialMenuItems(radialTargets)
@@ -821,3 +833,37 @@ private fun NavBackStackEntry.stringArgument(
     arguments?.read {
         getStringOrNull(key)
     }
+
+/** Возвращает только известное имя экрана; идентификаторы и произвольные аргументы не отправляются. */
+private fun NavBackStackEntry.analyticsScreenName(): String? = when (destination.route) {
+    DwijDestination.HOME -> "home"
+    DwijDestination.PLAYLISTS -> "playlists"
+    DwijDestination.ALL_TRACKS -> "all_tracks"
+    DwijDestination.DOWNLOADED_TRACKS_PATTERN -> "downloaded_tracks"
+    DwijDestination.WAVES -> "waves"
+    DwijDestination.VK_RECOMMENDATIONS -> "vk_recommendations"
+    DwijDestination.CATALOG_ARTISTS -> "catalog_artists"
+    DwijDestination.CATALOG_ALBUMS -> "catalog_albums"
+    DwijDestination.PLAYER -> "player"
+    DwijDestination.SONG_MATCHES -> "song_matches"
+    DwijDestination.SETTINGS -> "settings"
+    DwijDestination.RADIAL_MENU_SETTINGS -> "radial_menu_settings"
+    DwijDestination.SETTINGS_AUTH -> "settings_authorize"
+    DwijDestination.PLAYLISTS_ADD_PATTERN -> "playlist_add"
+    DwijDestination.OBJECT_PATTERN -> when (stringArgument(DwijDestination.ARG_OBJECT_TYPE)) {
+        DwijDestination.OBJECT_TYPE_TRACK -> "track"
+        DwijDestination.OBJECT_TYPE_PLAYLIST -> "yandex_playlist"
+        DwijDestination.OBJECT_TYPE_VK_PLAYLIST -> "vk_playlist"
+        DwijDestination.OBJECT_TYPE_TRACKLIST -> "tracklist"
+        DwijDestination.OBJECT_TYPE_ARTIST -> "artist"
+        DwijDestination.OBJECT_TYPE_ALBUM -> "album"
+        else -> "object"
+    }
+    DwijDestination.LOCAL_LIBRARY_PATTERN -> when (stringArgument(DwijDestination.ARG_LOCAL_MODE)) {
+        DwijDestination.LOCAL_MODE_PLAYLISTS -> "local_playlists"
+        DwijDestination.LOCAL_MODE_ALL_TRACKS -> "local_tracks"
+        DwijDestination.LOCAL_MODE_PLAYLIST -> "local_playlist"
+        else -> "local_library"
+    }
+    else -> null
+}

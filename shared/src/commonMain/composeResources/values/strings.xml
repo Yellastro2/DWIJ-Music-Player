@@ -14,6 +14,12 @@
     <string name="auth_device_title">Вход в Яндекс Музыку</string>
     <string name="auth_device_message">Откройте страницу:\n%1$s\n\nи введите код: %2$s</string>
     <string name="auth_open_browser">Открыть страницу</string>
+    <string name="auth_copy_code">Копировать код</string>
+    <string name="auth_copy_link">Копировать ссылку</string>
+    <string name="auth_link_copied">Ссылка скопирована</string>
+    <string name="auth_link_copy_error">Не удалось скопировать ссылку</string>
+    <string name="auth_link_clip_label">Ссылка для входа в Яндекс Музыку</string>
+    <string name="auth_code_copy_error">Не удалось скопировать код</string>
     <string name="auth_clip_label">Код входа Яндекс Музыки</string>
     <string name="auth_code_copied">Код скопирован</string>
     <string name="auth_browser_error">Не удалось открыть браузер</string>
@@ -77,7 +83,7 @@
     <string name="home_tracks">Треки</string>
     <string name="track_list_all_title">Все треки</string>
     <string name="track_list_empty">Треков пока нет</string>
-    <string name="catalog_artist_popular_empty">Популярных треков пока нет</string>
+    <string name="catalog_artist_tracks_retry">Не удалось загрузить треки. Повторить</string>
     <string name="catalog_load_error">Не удалось загрузить объект</string>
     <string name="catalog_monthly_listeners">%1$s в м.</string>
     <plurals name="catalog_yandex_track_count">

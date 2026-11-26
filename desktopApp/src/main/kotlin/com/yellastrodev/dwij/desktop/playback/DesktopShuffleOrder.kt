@@ -1,5 +1,6 @@
 package com.yellastrodev.dwij.desktop.playback
 
+import com.yellastrodev.dwij.playback.interleaveShuffleTracks
 import kotlin.random.Random
 
 /**
@@ -16,10 +17,12 @@ internal class DesktopShuffleOrder(
 
     private var position =
         -1
+    private var playedThrough = -1
 
     private var queueSize =
         0
 
+    /** Начинает новую историю с выбранного трека. */
     fun reset(
         queueSize: Int,
         currentIndex: Int,
@@ -46,22 +49,26 @@ internal class DesktopShuffleOrder(
 
         position =
             0
+        playedThrough = 0
 
         this.queueSize =
             queueSize
     }
 
+    /** Сбрасывает порядок и историю вместе с очередью. */
     fun clear() {
         order =
             emptyList()
 
         position =
             -1
+        playedThrough = -1
 
         queueSize =
             0
     }
 
+    /** Продвигает указатель и отмечает самую дальнюю пройденную позицию. */
     fun next(
         repeatAll: Boolean,
     ): Int? {
@@ -72,6 +79,7 @@ internal class DesktopShuffleOrder(
         if (position < order.lastIndex) {
             position +=
                 1
+            playedThrough = maxOf(playedThrough, position)
 
             return order[position]
         }
@@ -97,6 +105,7 @@ internal class DesktopShuffleOrder(
 
         position +=
             1
+        playedThrough = position
 
         return order[position]
     }
@@ -127,6 +136,7 @@ internal class DesktopShuffleOrder(
         return order[position]
     }
 
+    /** Запоминает ручной выбор, сохраняя границу уже пройденного порядка. */
     fun select(
         index: Int,
     ) {
@@ -161,16 +171,20 @@ internal class DesktopShuffleOrder(
                 it == index
             }
 
+        val selectedWasPlayedAhead = index in order.subList(position + 1, playedThrough + 1)
         order =
             history + index + future
 
         position =
             history.size
+        if (!selectedWasPlayedAhead) playedThrough++
     }
 
+    /** Для артиста распределяет добавление по ожидающим трекам, сохраняя историю после «Назад». */
     fun append(
         previousQueueSize: Int,
         newQueueSize: Int,
+        interleave: Boolean = false,
     ) {
         if (
             newQueueSize <= previousQueueSize
@@ -182,6 +196,11 @@ internal class DesktopShuffleOrder(
             newQueueSize
 
         if (position !in order.indices) {
+            return
+        }
+
+        if (interleave) {
+            order = interleaveShuffleTracks(order, playedThrough, previousQueueSize until newQueueSize, random)
             return
         }
 

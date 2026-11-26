@@ -2,6 +2,7 @@ package com.yellastrodev.dwij.desktop.playback
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Test
 import kotlin.random.Random
@@ -264,6 +265,23 @@ class DesktopShuffleOrderTest {
                 it >= 4
             }.toSet(),
         )
+    }
+
+    /** Добирает новые песни среди ожидающих и сохраняет уже прослушанный переход после «Назад». */
+    @Test
+    fun artistAppendInterleavesOnlyUnplayedTracks() {
+        val order = shuffleOrder(queueSize = 9, currentIndex = 0)
+        val alreadyPlayed = order.next(repeatAll = false)
+        val oldFuture = order.peekNext(9)
+        order.previous()
+
+        order.append(previousQueueSize = 9, newQueueSize = 20, interleave = true)
+
+        assertEquals(alreadyPlayed, order.next(repeatAll = false))
+        val future = order.peekNext(20)
+        assertEquals(oldFuture, future.filter { it < 9 })
+        assertEquals((9 until 20).toSet(), future.filter { it >= 9 }.toSet())
+        assertTrue(future.indexOfFirst { it >= 9 } < future.indexOfLast { it < 9 })
     }
 
     @Test

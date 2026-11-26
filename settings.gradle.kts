@@ -20,7 +20,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "DWIJ_v3"
+rootProject.name = "DWIJ"
 
 include(":app")
 include(":shared")

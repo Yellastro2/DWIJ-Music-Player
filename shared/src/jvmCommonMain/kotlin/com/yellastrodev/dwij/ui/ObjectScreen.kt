@@ -68,6 +68,7 @@ import org.jetbrains.compose.resources.stringResource
  * заголовок, описание, обложку, доступные действия и подготовленные элементы списка.
  * [objectMenuContent] добавляет меню в правую часть закреплённой верхней панели.
  * [playEnabled] позволяет отключить запуск пустой или уже подготавливаемой коллекции.
+ * [trackListFooter] показывает состояние подгрузки в конце списка.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -100,6 +101,7 @@ fun ObjectScreen(
     selectionTarget: RadialMenuTarget? = null,
     waveSelectionTarget: RadialMenuTarget.YandexWave? = null,
     playEnabled: Boolean = true,
+    trackListFooter: (@Composable () -> Unit)? = null,
 ) {
     val selection = LocalRadialMenuSelection.current
     Column(
@@ -127,6 +129,7 @@ fun ObjectScreen(
                 contextMenuContent = if (selection == null) trackContextMenuContent else null,
                 emptyMessage = emptyMessage,
                 isLoading = isLoading,
+                footer = trackListFooter,
                 header = {
                     ObjectHeader(
                         title = title,

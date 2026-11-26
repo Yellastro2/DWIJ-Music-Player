@@ -20,6 +20,11 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val firebaseAnalyticsEnabled = layout.projectDirectory.file("google-services.json").asFile.isFile
+if (firebaseAnalyticsEnabled) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 android {
     namespace = "com.yellastrodev.dwij"
     compileSdk = 36
@@ -32,6 +37,9 @@ android {
         versionName = appVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("boolean", "FIREBASE_ANALYTICS_ENABLED", firebaseAnalyticsEnabled.toString())
+        manifestPlaceholders["firebaseAnalyticsDeactivated"] = !firebaseAnalyticsEnabled
 
         buildConfigField(
             "String",
@@ -69,6 +77,8 @@ android {
 }
 
 dependencies {
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.analytics)
     implementation(project(":shared"))
     implementation(libs.androidx.core.ktx)
 

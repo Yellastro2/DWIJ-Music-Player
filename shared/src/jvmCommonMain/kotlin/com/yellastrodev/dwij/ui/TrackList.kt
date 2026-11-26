@@ -40,6 +40,7 @@ import org.jetbrains.compose.resources.stringResource
  * Линейный ленивый список треков для плейлистов, каталога и локальной медиатеки.
  * Обложки запрашиваются только для скомпонованных строк. Если задан [contextMenuContent],
  * long tap открывает привязанное к строке выпадающее меню.
+ * [footer] размещает состояние подгрузки после треков.
  */
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
@@ -57,6 +58,7 @@ fun TrackList(
     emptyMessage: String = "",
     isLoading: Boolean = false,
     header: (@Composable () -> Unit)? = null,
+    footer: (@Composable () -> Unit)? = null,
 ) {
     val coverStates = remember { mutableMapOf<String, TrackCoverState>() }
 
@@ -79,7 +81,7 @@ fun TrackList(
             ) { index ->
                 TrackListLoadingPlaceholder(showMessage = index == 0)
             }
-        } else if (items.isEmpty()) {
+        } else if (items.isEmpty() && (footer == null || emptyMessage.isNotBlank())) {
             item(key = "track_list_empty", contentType = "empty") {
                 Box(
                     contentAlignment = Alignment.Center,
@@ -141,6 +143,11 @@ fun TrackList(
                         }
                     }
                 }
+            }
+        }
+        footer?.let { footerContent ->
+            item(key = "track_list_footer", contentType = "footer") {
+                footerContent()
             }
         }
     }

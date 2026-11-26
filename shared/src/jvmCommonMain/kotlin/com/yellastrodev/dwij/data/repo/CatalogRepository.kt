@@ -31,6 +31,15 @@ data class CatalogArtistPage(
     val tracks: List<Song>,
 )
 
+/** Песни одной страницы и номер следующего запроса, если каталог ещё не исчерпан. */
+data class CatalogArtistTrackPage(
+    val tracks: List<Song>,
+    val nextPage: Int?,
+)
+
+/** Первый ЯМ-инстанс соответствует исходному треку в каталоге. */
+internal fun Song.artistTrackKey(): String = yandexInstances.firstOrNull()?.track?.id ?: id
+
 /** Собранная страница альбома с canonical-песнями в source-порядке. */
 data class CatalogAlbumPage(
     val albumId: String,
@@ -153,6 +162,31 @@ class CatalogRepository(
             }
 
             is DataResult.Failure -> cachedArtist(yandexId) ?: result
+        }
+    }
+
+    /** Сохраняет треки страницы и определяет продолжение по исходному ответу сервера. */
+    suspend fun artistTracks(yandexId: Int, page: Int): DataResult<CatalogArtistTrackPage> {
+        return when (val result = remote.artistTracks(yandexId, page)) {
+            is DataResult.Failure -> result
+            is DataResult.Success -> {
+                val response = result.value
+                val pager = response.pager
+                if (pager != null && pager.page != page && response.tracks.isNotEmpty()) {
+                    return DataResult.Failure(
+                        DataError.InvalidData("Яндекс Музыка вернула страницу ${pager.page} вместо $page"),
+                    )
+                }
+                val nextPage = (page + 1).takeIf {
+                    response.tracks.isNotEmpty() &&
+                        (pager == null || (page + 1L) * pager.perPage < pager.total)
+                }
+                val tracks = response.tracks.distinctBy { it.id }.map { it.toEntity() }
+                trackRepository.putTracks(tracks)
+                DataResult.Success(
+                    CatalogArtistTrackPage(songRepository.songsForYandexTracks(tracks), nextPage),
+                )
+            }
         }
     }
 

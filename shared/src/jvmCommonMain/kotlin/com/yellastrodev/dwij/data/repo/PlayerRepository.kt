@@ -1,6 +1,8 @@
 package com.yellastrodev.dwij.data.repo
 
 
+import com.yellastrodev.dwij.data.DataError
+import com.yellastrodev.dwij.data.DataResult
 import com.yellastrodev.dwij.data.entities.LocalTracklist
 import com.yellastrodev.dwij.data.entities.MusicSource
 import com.yellastrodev.dwij.data.entities.PlaybackTrack
@@ -15,6 +17,7 @@ import com.yellastrodev.dwij.playback.RepeatMode
 import com.yellastrodev.dwij.utils.PlayerEvent
 import com.yellastrodev.dwij.utils.PlayerState
 import com.yellastrodev.yamusicsdk.YamLogger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,7 +39,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.yellastrodev.dwij.playback.OfflinePlaybackPolicy
 
-/** Управляет очередью, явным/автоматическим офлайном и реакциями без замены временных песен. */
+/** Управляет очередью, подгрузкой каталога артиста, офлайном и реакциями. */
 class PlayerRepository(
     private val engine: PlayerEngine,
     private val settings: PlaybackSettings,
@@ -78,6 +81,9 @@ class PlayerRepository(
 
     private var prefetchJob: Job? = null
     private var lastPrefetchKey: String? = null
+    @Volatile private var artistQueue: ArtistQueue? = null
+    @Volatile private var artistLoadJob: Job? = null
+    private val playbackCommandVersion = AtomicLong()
 
     private val mutableCurrentTrack = MutableStateFlow<String?>(null)
     val currentTrack: StateFlow<String?> = mutableCurrentTrack.asStateFlow()
@@ -106,13 +112,22 @@ class PlayerRepository(
         engine.state
             .onEach { playerState ->
                 offlinePolicy.progress(playerState)
-                if (playerState.currentIndex != mutableState.value.currentIndex) {
+                val previous = mutableState.value
+                if (playerState.currentIndex != previous.currentIndex) {
                     updateCurrentTrack(playerState.currentIndex)
                     scheduleOnlineProbe()
                 }
 
-                mutableState.value = playerState
+                mutableState.value = if (artistQueue?.nextPage != null) {
+                    playerState.copy(isRepeatAll = settings.repeatMode == RepeatMode.ALL)
+                } else playerState
                 schedulePrefetch(playerState)
+                if (playerState.currentIndex != previous.currentIndex ||
+                    playerState.isShuffle != previous.isShuffle ||
+                    (playerState.wantsToPlay && !previous.wantsToPlay)
+                ) {
+                    scheduleArtistTracks()
+                }
             }
             .launchIn(scope)
 
@@ -121,13 +136,42 @@ class PlayerRepository(
             .launchIn(scope)
     }
 
-    /** Продолжает ЯМ-волну только онлайн и с явно указанным поддерживаемым seed треклиста. */
+    /** Продолжает каталог артиста, а после его конца разрешает повтор или волну. */
     private suspend fun handleEngineEvent(event: PlayerEvent) {
         if (event is PlayerEvent.TrackListEnd) {
+            val generation = userQueueGeneration
+            artistQueue?.let { continuation ->
+                if (!continuation.ready) return
+                val endedIndex = engine.state.value.currentIndex
+                val commandVersion = playbackCommandVersion.get()
+                fillArtistQueue(continuation, generation, minimumAhead = 1, retry = true)
+                val handled = queueCommandMutex.withLock {
+                    if (generation != userQueueGeneration || artistQueue !== continuation ||
+                        commandVersion != playbackCommandVersion.get() ||
+                        engine.state.value.currentIndex != endedIndex ||
+                        engine.state.value.isPlaying || engine.state.value.pendingTrackChange != null
+                    ) return@withLock true
+
+                    val next = engine.getUpcomingIndices(1).firstOrNull()
+                    when {
+                        next != null -> engine.playTrack(next)
+                        continuation.nextPage != null -> return@withLock false
+                        settings.repeatMode == RepeatMode.ALL && !isOffline.value -> engine.skipNext()
+                        else -> return@withLock false
+                    }
+                    true
+                }
+                if (handled) return
+                if (continuation.nextPage != null) {
+                    if (!isOffline.value) emitArtistLoadError()
+                    else mutableEvents.emit(event)
+                    return
+                }
+            }
             val tracklist = dtracklist.value
 
             if (
-                !isOffline.value && tracklist != null &&
+                generation == userQueueGeneration && !isOffline.value && tracklist != null &&
                 !tracklist.yandexWaveSeed().isNullOrBlank()
             ) {
                 continueWave(tracklist)
@@ -156,7 +200,30 @@ class PlayerRepository(
     }
 
     /** Возвращает результат подготовки; offlineOnly разрешает только готовые файлы без сетевого fallback. */
-    suspend fun tryPlayQueue(songs: List<Song>, startIndex: Int, tracklist: dTracklist): Boolean {
+    suspend fun tryPlayQueue(songs: List<Song>, startIndex: Int, tracklist: dTracklist): Boolean =
+        startQueue(songs, startIndex, tracklist, continuation = null)
+
+    /** Запускает каталог артиста и передаёт подгрузку очереди в scope плеера. */
+    suspend fun playArtistQueue(
+        songs: List<Song>,
+        startIndex: Int,
+        tracklist: dTracklist,
+        nextPage: Int?,
+        loadPage: suspend (Int) -> DataResult<CatalogArtistTrackPage>,
+    ) {
+        startQueue(
+            songs, startIndex, tracklist,
+            ArtistQueue(nextPage, songs.mapTo(mutableSetOf(), Song::artistTrackKey), loadPage),
+        )
+    }
+
+    /** Подготавливает воспроизводимые экземпляры и связывает продолжение с новой очередью. */
+    private suspend fun startQueue(
+        songs: List<Song>,
+        startIndex: Int,
+        tracklist: dTracklist,
+        continuation: ArtistQueue?,
+    ): Boolean {
         if (songs.isEmpty() || startIndex !in songs.indices) {
             logger.warning(
                 TAG,
@@ -166,8 +233,11 @@ class PlayerRepository(
             return false
         }
 
-        userQueueGeneration++
-        val generation = userQueueGeneration
+        val generation = synchronized(this) {
+            artistLoadJob?.cancel()
+            artistQueue = null
+            ++userQueueGeneration
+        }
         offlineTransition?.cancel()
         probeJob?.cancel()
         originalSongs = songs
@@ -189,6 +259,7 @@ class PlayerRepository(
 
         if (playableSongs.isEmpty()) {
             if (isOffline.value || tracklist.offlineOnly()) {
+                artistQueue = continuation
                 mutableTracklist.value = tracklist
                 clearUnavailableQueue(generation)
                 mutableEvents.emit(PlayerEvent.ShowError("В этой очереди нет треков, доступных без сети"))
@@ -236,8 +307,13 @@ class PlayerRepository(
             startIndex = resolvedStartIndex,
             tracklist = tracklist,
             expectedGeneration = generation,
+            artistContinuation = continuation,
         )
         scheduleOnlineProbe()
+        if (generation == userQueueGeneration) {
+            continuation?.ready = true
+            scheduleArtistTracks()
+        }
         return generation == userQueueGeneration
     }
 
@@ -249,6 +325,7 @@ class PlayerRepository(
         tracklist: dTracklist?,
         autoPlay: Boolean = true,
         expectedGeneration: Long = userQueueGeneration,
+        artistContinuation: ArtistQueue? = artistQueue,
     ): Unit = queueCommandMutex.withLock {
         if (expectedGeneration != userQueueGeneration) return
         if (tracks.isEmpty() || startIndex !in tracks.indices) {
@@ -264,6 +341,7 @@ class PlayerRepository(
 
         engine.prepare()
         if (expectedGeneration != userQueueGeneration) return
+        artistQueue = artistContinuation
 
         if (tracklist != null && dtracklist.value?.getdId() == tracklist.getdId()) {
             logger.debug(TAG, "[playQueue] Треклист не изменился")
@@ -278,6 +356,7 @@ class PlayerRepository(
                 currentTrackList == newSongIds &&
                 sameInstances
             ) {
+                if (artistContinuation != null) applyArtistRepeatMode()
                 if (state.value.currentIndex == startIndex) {
                     if (!engine.state.value.wantsToPlay) engine.togglePlayPause()
                     logger.debug(
@@ -395,6 +474,11 @@ class PlayerRepository(
             return
         }
 
+        appendResolvedTracks(resolved)
+    }
+
+    /** Обновляет таблицу индексов и движок под общим mutex команд очереди. */
+    private suspend fun appendResolvedTracks(resolved: List<Pair<Song, PlaybackTrack>>) {
         val resolvedSongs = resolved.map { pair ->
             pair.first
         }
@@ -422,23 +506,136 @@ class PlayerRepository(
         schedulePrefetch(state.value)
     }
 
+    /** Запускает одну фоновую подгрузку и расширяет запас при включении shuffle. */
+    @Synchronized
+    private fun scheduleArtistTracks() {
+        val continuation = artistQueue ?: return
+        if (!continuation.ready || continuation.nextPage == null || continuation.failed || isOffline.value ||
+            artistLoadJob?.isActive == true
+        ) return
+        val generation = userQueueGeneration
+        artistLoadJob = scope.launch {
+            fillArtistQueue(continuation, generation)
+        }
+    }
+
+    /** Догружает страницы до нужного запаса в фактическом порядке плеера. */
+    private suspend fun fillArtistQueue(
+        continuation: ArtistQueue,
+        generation: Long,
+        minimumAhead: Int? = null,
+        retry: Boolean = false,
+    ) {
+        var retryFailedPage = retry
+        while (generation == userQueueGeneration && artistQueue === continuation &&
+            continuation.nextPage != null && !isOffline.value
+        ) {
+            val ahead = minimumAhead ?: if (engine.state.value.isShuffle) {
+                ARTIST_SHUFFLE_AHEAD_COUNT
+            } else ARTIST_AHEAD_COUNT
+            if (engine.getUpcomingIndices(ahead).size >= ahead) return
+            if (!loadArtistPage(continuation, generation, retryFailedPage)) return
+            retryFailedPage = false
+            yield()
+        }
+    }
+
+    /** Сериализует запросы курсора и публикует страницу только для прежней очереди. */
+    private suspend fun loadArtistPage(
+        continuation: ArtistQueue,
+        generation: Long,
+        retry: Boolean,
+    ): Boolean = continuation.pageMutex.withLock {
+        val page = continuation.nextPage ?: return false
+        if (generation != userQueueGeneration || artistQueue !== continuation ||
+            isOffline.value || (continuation.failed && !retry)
+        ) return false
+
+        val result = try {
+            continuation.loadPage(page)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            DataResult.Failure(DataError.Unknown(error))
+        }
+        when (result) {
+            is DataResult.Failure -> {
+                continuation.failed = true
+                logger.warning(TAG, "[loadArtistPage] Не удалось загрузить страницу $page каталога артиста")
+                false
+            }
+            is DataResult.Success -> {
+                val newSongs = result.value.tracks.distinctBy(Song::artistTrackKey)
+                    .filter { it.artistTrackKey() !in continuation.seen }
+                val resolved = withContext(Dispatchers.IO) {
+                    newSongs.mapNotNull { song ->
+                        song.toPlaybackTrack(isTrackCached, resolveVkUri)?.let { song to it }
+                    }
+                }
+                queueCommandMutex.withLock {
+                    if (generation != userQueueGeneration || artistQueue !== continuation || isOffline.value) {
+                        return false
+                    }
+                    if (resolved.isNotEmpty()) appendResolvedTracks(resolved)
+                    newSongs.mapTo(continuation.seen, Song::artistTrackKey)
+                    continuation.failed = false
+                    continuation.nextPage = result.value.nextPage
+                    if (continuation.nextPage == null) applyArtistRepeatMode()
+                }
+                true
+            }
+        }
+    }
+
+    /** Сообщает об ошибке, сохраняя курсор для повторного нажатия «Далее». */
+    private suspend fun emitArtistLoadError() {
+        mutableEvents.emit(PlayerEvent.ShowError("Не удалось загрузить треки артиста. Нажмите «Далее», чтобы повторить"))
+    }
+
+    /** Переключает паузу, отменяя ожидающий автоматический переход. */
     fun pause() {
+        playbackCommandVersion.incrementAndGet()
         scope.launch {
             engine.togglePlayPause()
         }
     }
 
+    /** На границе каталога ждёт следующую страницу перед ручным переходом. */
     suspend fun skipNext() {
+        val commandVersion = playbackCommandVersion.incrementAndGet()
+        val continuation = artistQueue
+        if (continuation?.nextPage != null) {
+            val generation = userQueueGeneration
+            val index = engine.state.value.currentIndex
+            fillArtistQueue(continuation, generation, minimumAhead = 1, retry = true)
+            val needsRetry = queueCommandMutex.withLock {
+                if (generation != userQueueGeneration || artistQueue !== continuation ||
+                    commandVersion != playbackCommandVersion.get() || index != engine.state.value.currentIndex
+                ) return
+                if (continuation.nextPage != null && engine.getUpcomingIndices(1).isEmpty()) {
+                    true
+                } else {
+                    engine.skipNext()
+                    false
+                }
+            }
+            if (needsRetry && !isOffline.value) emitArtistLoadError()
+            return
+        }
         engine.skipNext()
     }
 
+    /** Возвращается по истории, отменяя ожидающий переход вперёд. */
     suspend fun skipPrev() {
+        playbackCommandVersion.incrementAndGet()
         engine.skipPrevious()
     }
 
+    /** Перематывает текущий трек, отменяя ожидающий переход после его конца. */
     fun seekTo(
         positionMs: Long,
     ) {
+        playbackCommandVersion.incrementAndGet()
         scope.launch {
             engine.seekTo(positionMs)
         }
@@ -458,6 +655,7 @@ class PlayerRepository(
         }
     }
 
+    /** Сохраняет выбранный повтор, откладывая зацикливание до конца каталога артиста. */
     fun rotate() {
         if (isShuffleBlock.value) {
             return
@@ -472,18 +670,27 @@ class PlayerRepository(
         settings.repeatMode = newMode
 
         scope.launch {
-            engine.setRepeatMode(newMode)
+            queueCommandMutex.withLock {
+                if (!isShuffleBlock.value) applyArtistRepeatMode()
+            }
         }
     }
 
+    /** Восстанавливает настройки для новой очереди с учётом открытого курсора каталога. */
     private suspend fun applySavedModes() {
         engine.setShuffleEnabled(
             settings.shuffleEnabled,
         )
 
-        engine.setRepeatMode(
-            settings.repeatMode,
-        )
+        applyArtistRepeatMode()
+    }
+
+    /** Отключает фактический повтор неполной очереди, сохраняя выбор в интерфейсе. */
+    private suspend fun applyArtistRepeatMode() {
+        val pending = artistQueue?.nextPage != null
+        val requested = settings.repeatMode
+        engine.setRepeatMode(if (pending) RepeatMode.OFF else requested)
+        if (pending) mutableState.value = mutableState.value.copy(isRepeatAll = requested == RepeatMode.ALL)
     }
 
     fun List<Song>.stableHash(): Int {
@@ -744,6 +951,8 @@ class PlayerRepository(
         offlinePolicy.onlineConfirmed()
         logger.info(TAG, "[restoreOnlineQueue] Сетевая проверка успешна, обычная очередь восстановлена")
         schedulePrefetch(engine.state.value)
+        artistQueue?.ready = true
+        scheduleArtistTracks()
     }
 
     /**
@@ -801,9 +1010,22 @@ class PlayerRepository(
         mutableCurrentSong.value = mutableCurrentSong.value?.withYandexReaction(trackId, liked)
     }
 
+    /** Курсор, дедупликация и сериализация запросов одной запущенной очереди артиста. */
+    private class ArtistQueue(
+        @Volatile var nextPage: Int?,
+        val seen: MutableSet<String>,
+        val loadPage: suspend (Int) -> DataResult<CatalogArtistTrackPage>,
+    ) {
+        val pageMutex = Mutex()
+        @Volatile var failed = false
+        @Volatile var ready = false
+    }
+
     private companion object {
         const val TAG = "PlayerRepository"
         const val PREFETCH_AHEAD_COUNT = 2
+        const val ARTIST_AHEAD_COUNT = 4
+        const val ARTIST_SHUFFLE_AHEAD_COUNT = 100
     }
 }
 

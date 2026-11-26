@@ -1,15 +1,18 @@
 package com.yellastrodev.dwij.navigation
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import com.yellastrodev.dwij.RadialMenuTarget
 import com.yellastrodev.dwij.RadialMenuCollection
@@ -17,6 +20,7 @@ import com.yellastrodev.dwij.data.entities.MusicSource
 import com.yellastrodev.dwij.data.entities.dYaLikeTracklist.Companion.KIND_LIKED
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,7 +56,7 @@ import com.yellastrodev.dwij.resources.object_share
 import com.yellastrodev.dwij.resources.object_track_count
 import com.yellastrodev.dwij.resources.track_list_all_title
 import com.yellastrodev.dwij.resources.track_list_empty
-import com.yellastrodev.dwij.resources.catalog_artist_popular_empty
+import com.yellastrodev.dwij.resources.catalog_artist_tracks_retry
 import com.yellastrodev.dwij.resources.catalog_likes_count
 import com.yellastrodev.dwij.resources.catalog_load_error
 import com.yellastrodev.dwij.resources.catalog_monthly_listeners
@@ -822,7 +826,7 @@ fun ObjectRoute(
     }
 }
 
-/** Каталог ЯМ: списки артиста/альбома не назначаются, но волна по артисту доступна для выбора. */
+/** Показывает объект каталога ЯМ и подгружает треки артиста при прокрутке. */
 @Composable
 private fun CatalogObjectRoute(
     component: DwijComponent,
@@ -846,6 +850,15 @@ private fun CatalogObjectRoute(
     )
     val state by model.state.collectAsState()
     val unknownArtist = stringResource(Res.string.home_player_unknown_artist)
+    val listState = rememberLazyListState()
+    val trackCount = state.tracks.size
+    val nearListEnd by remember(listState, trackCount) {
+        derivedStateOf {
+            val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            // Шапка занимает нулевую позицию, поэтому индекс последнего трека равен trackCount.
+            lastVisibleIndex >= (trackCount - 2).coerceAtLeast(0)
+        }
+    }
     var cover by remember(state.externalId, state.coverUri) {
         mutableStateOf<ImageBitmap?>(null)
     }
@@ -858,9 +871,14 @@ private fun CatalogObjectRoute(
     LaunchedEffect(state.coverUri) {
         cover = model.objectCover()?.toImageBitmapOrNull()
     }
-    LaunchedEffect(state.error) {
-        if (state.error == DataError.Unauthorized) {
+    LaunchedEffect(state.error, state.artistTracksError) {
+        if (state.error == DataError.Unauthorized || state.artistTracksError == DataError.Unauthorized) {
             component.requireYandexAuthorization()
+        }
+    }
+    LaunchedEffect(nearListEnd, state.nextArtistTrackPage, state.isLoading, state.artistTracksError) {
+        if (nearListEnd && state.nextArtistTrackPage != null && state.artistTracksError == null) {
+            model.loadMoreArtistTracks()
         }
     }
 
@@ -903,8 +921,7 @@ private fun CatalogObjectRoute(
     }
     val emptyMessage = when {
         state.error != null -> stringResource(Res.string.catalog_load_error)
-        kind == CatalogObjectKind.Artist ->
-            stringResource(Res.string.catalog_artist_popular_empty)
+        state.artistTracksError != null -> ""
         else -> stringResource(Res.string.track_list_empty)
     }
 
@@ -919,6 +936,7 @@ private fun CatalogObjectRoute(
         description = state.description,
         cover = cover,
         tracks = trackItems,
+        listState = listState,
         onBackClick = onBackClick,
         onPlayClick = {
             val firstPlayable = trackItems.indexOfFirst { !it.isPlaybackBlocked }
@@ -969,9 +987,32 @@ private fun CatalogObjectRoute(
             }
         },
         emptyMessage = emptyMessage,
-        isLoading = state.isLoading && state.tracks.isEmpty(),
+        isLoading = (state.isLoading || state.isLoadingArtistTracks) && state.tracks.isEmpty(),
         isRefreshing = state.isLoading && state.tracks.isNotEmpty(),
         onRefresh = model::refresh,
+        trackListFooter = when {
+            state.isLoading -> null
+            state.artistTracksError != null -> {
+                {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        TextButton(onClick = model::loadMoreArtistTracks) {
+                            Text(stringResource(Res.string.catalog_artist_tracks_retry))
+                        }
+                    }
+                }
+            }
+            state.isLoadingArtistTracks && state.tracks.isNotEmpty() -> {
+                {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                    }
+                }
+            }
+            else -> null
+        },
         modifier = modifier,
     )
 }
