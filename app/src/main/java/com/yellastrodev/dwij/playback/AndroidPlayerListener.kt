@@ -27,13 +27,14 @@ class AndroidPlayerListener(
 
     private var progressJob: Job? = null
 
+    /** Публикует смену записи и передаёт в статистику исходные координаты файла. */
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         feedback.onMediaItemTransition(
             mediaItem = mediaItem,
             reason = reason,
             isPlaying = player.isPlaying,
-            currentPositionMs = player.currentPosition,
-            durationMs = player.duration,
+            currentPositionMs = player.filePositionMs,
+            durationMs = player.fileDurationMs,
         )
 
         if (
@@ -78,8 +79,8 @@ class AndroidPlayerListener(
         if (playbackState != Player.STATE_ENDED) return
 
         feedback.onPlaybackEnded(
-            currentPositionMs = player.currentPosition,
-            durationMs = player.duration,
+            currentPositionMs = player.filePositionMs,
+            durationMs = player.fileDurationMs,
             completed = true,
         )
 
@@ -97,14 +98,15 @@ class AndroidPlayerListener(
         }
     }
 
+    /** Сохраняет флаг воспроизведения и полную шкалу для статистики источника. */
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         stateStore.setPlaying(isPlaying)
 
         feedback.onIsPlayingChanged(
             mediaItem = player.currentMediaItem,
             isPlaying = isPlaying,
-            currentPositionMs = player.currentPosition,
-            durationMs = player.duration,
+            currentPositionMs = player.filePositionMs,
+            durationMs = player.fileDurationMs,
         )
 
         if (isPlaying) startProgressUpdates() else stopProgressUpdates()
@@ -134,6 +136,7 @@ class AndroidPlayerListener(
         stopProgressUpdates()
     }
 
+    /** Дополняет именно текущий MediaItem, сохраняя обновлённые во время загрузки границы. */
     private fun loadArtwork(mediaItem: MediaItem) {
         val trackId = mediaItem.mediaId
 
@@ -141,27 +144,31 @@ class AndroidPlayerListener(
             val coverBytes =
                 trackCoverLoader.loadPlayerCover(trackId) ?: return@launch
 
-            val newItem = mediaItem.buildUpon()
-                .setMediaMetadata(
-                    mediaItem.mediaMetadata.buildUpon()
-                        .setArtworkData(
-                            coverBytes,
-                            MediaMetadata.PICTURE_TYPE_FRONT_COVER,
-                        )
-                        .build(),
-                )
-                .build()
-
             withContext(Dispatchers.Main.immediate) {
                 val index = player.currentMediaItemIndex
                 if (index == C.INDEX_UNSET) return@withContext
-                if (player.getMediaItemAt(index).mediaId != trackId) return@withContext
+                val current = player.getMediaItemAt(index)
+                if (current.mediaId != trackId) return@withContext
 
-                player.replaceMediaItem(index, newItem)
+                player.replaceMediaItem(index, current.buildUpon()
+                    .setMediaMetadata(current.mediaMetadata.buildUpon()
+                        .setArtworkData(coverBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                        .build())
+                    .build())
             }
         }
     }
 
+    /** Обновляет шкалу после перемотки или изменения диапазона даже на паузе. */
+    override fun onEvents(player: Player, events: Player.Events) {
+        if (events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_POSITION_DISCONTINUITY,
+                Player.EVENT_PLAYBACK_STATE_CHANGED) && player.duration > 0
+        ) {
+            stateStore.setProgress(player.currentPosition, player.duration)
+        }
+    }
+
+    /** Публикует прогресс фрагмента для UI и исходные координаты для статистики. */
     private fun startProgressUpdates() {
         progressJob?.cancel()
         progressJob = scope.launch {
@@ -173,8 +180,8 @@ class AndroidPlayerListener(
 
                 feedback.onProgress(
                     trackId = player.currentMediaItem?.mediaId,
-                    currentPositionMs = positionMs,
-                    durationMs = durationMs,
+                    currentPositionMs = player.filePositionMs,
+                    durationMs = player.fileDurationMs,
                 )
 
                 delay(PROGRESS_INTERVAL_MS)

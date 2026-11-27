@@ -1,7 +1,7 @@
 package com.yellastrodev.dwij.data.entities
 
 /**
- * Внутренний транспорт выбранного [TrackInstance] к Media3.
+ * Внутренний транспорт выбранного [TrackInstance] к платформенному плееру.
  * Экраны и публичная очередь работают с [Song], а не с этим DTO.
  */
 data class PlaybackTrack(
@@ -16,13 +16,14 @@ data class PlaybackTrack(
     val artworkUri: String?,
     val yandexTrack: dYaTrack? = null,
     val localTrack: LocalTrackEntity? = null,
+    val offsets: PlaybackOffsets = PlaybackOffsets(),
 )
 
 /** Сохраняет прежний контракт для очередей без VK-resolver. */
 fun Song.toPlaybackTrack(isYandexCached: (String) -> Boolean): PlaybackTrack? =
     toPlaybackTrack(isYandexCached, { null })
 
-/** Выбирает экземпляр; VK-resolver создаёт адрес текущего relay, не изменяя постоянную Song. */
+/** Выбирает экземпляр с его собственной длительностью и воспроизводимым URI. */
 fun Song.toPlaybackTrack(
     isYandexCached: (String) -> Boolean,
     resolveVkUri: (TrackInstance.Vk) -> String?,
@@ -51,7 +52,8 @@ fun Song.toPlaybackTrack(
         is TrackInstance.Vk -> PlaybackTrack(
             id = selected.track.fullId, songId = id, instanceId = selected.id,
             source = MusicSource.VK, title = title, artistNames = artistNames,
-            durationMs = durationMs, playbackUri = vkUris[selected.id] ?: return null, artworkUri = coverUri,
+            durationMs = selected.track.duration.takeIf { it > 0 }?.times(1000),
+            playbackUri = vkUris[selected.id] ?: return null, artworkUri = coverUri,
         )
         is TrackInstance.Yandex -> PlaybackTrack(
             id = selected.track.id,
@@ -60,7 +62,7 @@ fun Song.toPlaybackTrack(
             source = MusicSource.YANDEX,
             title = title,
             artistNames = artistNames,
-            durationMs = durationMs,
+            durationMs = selected.track.durationMs?.takeIf { it > 0 }?.toLong(),
             playbackUri = "ya://${selected.track.id}",
             artworkUri = coverUri,
             yandexTrack = selected.track,
@@ -72,7 +74,7 @@ fun Song.toPlaybackTrack(
             source = MusicSource.LOCAL,
             title = title,
             artistNames = artistNames,
-            durationMs = durationMs,
+            durationMs = selected.track.durationMs.takeIf { it > 0 },
             playbackUri = selected.track.contentUri,
             artworkUri = coverUri,
             localTrack = selected.track,

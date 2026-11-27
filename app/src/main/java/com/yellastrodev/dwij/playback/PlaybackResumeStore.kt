@@ -24,7 +24,7 @@ class PlaybackResumeStore(context: Context) {
         val repeatMode: Int,
     )
 
-    /** Записывает воспроизводимые URI и текущую позицию одним атомарным обновлением. */
+    /** Записывает URI, диапазоны и позицию внутри текущего диапазона одним обновлением. */
     fun save(player: Player) {
         if (player.mediaItemCount == 0) return
         val items = JSONArray()
@@ -47,6 +47,8 @@ class PlaybackResumeStore(context: Context) {
                 put("artist", metadata.artist?.toString())
                 put("artworkUri", metadata.artworkUri?.toString())
                 put("extras", extras)
+                put("clipStartMs", item.clippingConfiguration.startPositionMs)
+                put("clipEndMs", item.clippingConfiguration.endPositionMs)
             })
         }
         if (items.length() == 0) return
@@ -60,7 +62,7 @@ class PlaybackResumeStore(context: Context) {
         preferences.edit().putString(KEY_SNAPSHOT, snapshot.toString()).apply()
     }
 
-    /** Читает только целый и пригодный для проигрывания снимок. */
+    /** Читает снимок диапазонов; старые снимки восстанавливаются с полными записями. */
     fun load(): Snapshot? = runCatching {
         val root = JSONObject(preferences.getString(KEY_SNAPSHOT, null) ?: return null)
         val encodedItems = root.getJSONArray("items")
@@ -90,6 +92,14 @@ class PlaybackResumeStore(context: Context) {
                     .setMediaId(encoded.getString("id"))
                     .setUri(Uri.parse(encoded.getString("uri")))
                     .setMediaMetadata(metadata)
+                    .setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(encoded.optLong("clipStartMs"))
+                            .apply {
+                                if (encoded.has("clipEndMs")) setEndPositionMs(encoded.getLong("clipEndMs"))
+                            }
+                            .build()
+                    )
                     .build())
             }
         }

@@ -138,3 +138,17 @@ class AndroidPlaybackFeedbackAdapter(
         const val ANDROID_PLAYBACK_REPORT_SOURCE = "dwij-android"
     }
 }
+
+/** Отчёты источнику используют координаты файла, тогда как UI получает шкалу фрагмента. */
+internal val Player.filePositionMs: Long
+    get() = currentPosition + (currentMediaItem?.clippingConfiguration?.startPositionMs ?: 0L)
+
+/** Восстанавливает длительность записи для отчёта при активных границах. */
+internal val Player.fileDurationMs: Long
+    get() {
+        val item = currentMediaItem ?: return duration
+        val clipping = item.clippingConfiguration
+        if (clipping == MediaItem.ClippingConfiguration.UNSET) return duration
+        return item.mediaMetadata.extras?.getLong(PlaybackMetadataKeys.PLAY_DURATION_MS)
+            ?.takeIf { it > 0 } ?: duration.takeIf { it > 0 }?.plus(clipping.startPositionMs) ?: duration
+    }

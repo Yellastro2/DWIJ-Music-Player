@@ -150,6 +150,7 @@ data class FullPlayerUiState(
  * Позиция ползунка меняется локально во время жеста, а seek отправляется плееру только при отпускании.
  * Горизонтальный свайп центральной секции переключает трек; область прогресса сохраняет собственные жесты.
  * Метки плейлистов и кнопка добавления доступны всем подключённым сервисам независимо от лайков.
+ * В дополнительном меню есть вход в настройки фактически играющей записи.
  * Ошибки воспроизведения показывает общий snackbar DwijApp; здесь остаются сообщения экрана и конца очереди.
  */
 @Composable
@@ -173,6 +174,7 @@ fun FullPlayerScreen(
     onSaveLocallyClick: () -> Unit,
     onShareClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onTrackSettingsClick: (() -> Unit)? = null,
 ) {
     val backgroundColor = DwijColors.Background
     val snackbarHostState = remember { SnackbarHostState() }
@@ -230,6 +232,7 @@ fun FullPlayerScreen(
                 onDislikeClick = onDislikeClick,
                 onSaveLocallyClick = onSaveLocallyClick,
                 onShareClick = onShareClick,
+                onTrackSettingsClick = onTrackSettingsClick,
                 onBackClick = onBackClick,
             )
             Column(
@@ -383,7 +386,7 @@ private fun QueueOriginIndicator(origin: MusicSource, modifier: Modifier = Modif
     }
 }
 
-/** Рисует заголовок, индикатор офлайна слева от источников и действия текущей песни. */
+/** Рисует заголовок, индикатор офлайна и меню с настройками текущей записи. */
 @Composable
 private fun FullPlayerTopBar(
     queueTitle: String,
@@ -403,6 +406,7 @@ private fun FullPlayerTopBar(
     onDislikeClick: () -> Unit,
     onSaveLocallyClick: () -> Unit,
     onShareClick: () -> Unit,
+    onTrackSettingsClick: (() -> Unit)?,
     onBackClick: () -> Unit,
 ) {
     val backDescription = stringResource(Res.string.player_back_content_description)
@@ -538,6 +542,15 @@ private fun FullPlayerTopBar(
                 onDismissRequest = { isMoreMenuExpanded = false },
                 modifier = Modifier.background(DwijColors.PlayerSnackbarBackground),
             ) {
+                if (onTrackSettingsClick != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(Res.string.player_track_settings), color = DwijColors.White) },
+                        onClick = {
+                            isMoreMenuExpanded = false
+                            onTrackSettingsClick()
+                        },
+                    )
+                }
                 DropdownMenuItem(
                     text = {
                         Text(

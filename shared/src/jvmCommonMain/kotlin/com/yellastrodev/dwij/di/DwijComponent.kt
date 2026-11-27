@@ -232,6 +232,7 @@ class DwijComponent private constructor(
     val playerRepo: PlayerRepository by lazy {
         PlayerRepository(
             engine = playerEngine,
+            trackSettingsDao = db.trackPlaybackSettingsDao(),
             resolveVkUri = vkMusicRepository::playbackUri,
             resolveOfflineTrack = { song ->
                 song.toOfflinePlaybackTrack(

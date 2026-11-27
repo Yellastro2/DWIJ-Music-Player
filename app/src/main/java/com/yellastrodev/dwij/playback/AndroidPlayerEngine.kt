@@ -8,6 +8,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 
 import com.yellastrodev.dwij.data.entities.PlaybackTrack
+import com.yellastrodev.dwij.data.entities.PlaybackOffsets
 import com.yellastrodev.dwij.data.entities.dTracklist
 import com.yellastrodev.dwij.service.PlayerService
 import com.yellastrodev.dwij.utils.PlayerEvent
@@ -28,7 +29,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/** Связывает общий PlayerEngine с сервисом, восстановлением очереди и shuffle каталога. */
+/** Связывает общий PlayerEngine с сервисом, диапазонами Media3 и восстановлением очереди. */
 class AndroidPlayerEngine(
     context: Context,
     private val scope: CoroutineScope,
@@ -45,6 +46,16 @@ class AndroidPlayerEngine(
     override fun setFailureHandler(handler: (Int, Boolean) -> Boolean) {
         failureHandler = handler
         service?.onPlaybackFailure = handler
+    }
+
+    /** Обновляет диапазоны на потоке Media3 и сохраняет очередь для пересоздания сервиса. */
+    override suspend fun updateTrackOffsets(instanceId: String, offsets: PlaybackOffsets, durationMs: Long?) {
+        withContext(Dispatchers.Main) {
+            val active = service ?: getApplicationService() ?: return@withContext
+            active.updateTrackOffsets(instanceId, offsets.toClippingConfiguration(durationMs), durationMs)
+            val items = List(active.player.mediaItemCount) { active.player.getMediaItemAt(it) }
+            if (items.isNotEmpty()) playbackSnapshot = PlaybackSnapshot(items)
+        }
     }
 
     /** Останавливает намерение играть; пустая офлайн-очередь удаляет недоступные сетевые элементы. */

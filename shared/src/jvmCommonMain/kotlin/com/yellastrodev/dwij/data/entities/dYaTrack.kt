@@ -6,8 +6,9 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.yellastrodev.yamusicsdk.entities.YaTrack
 import androidx.room.Ignore
+import kotlin.math.roundToLong
 
-/** Сохранённые метаданные трека Яндекс Музыки и время проверки его доступности. */
+/** Сохранённые метаданные, внешние точки фейда и время проверки доступности записи Яндекса. */
 @Entity(tableName = "tracks")
 class dYaTrack(
     @PrimaryKey
@@ -22,6 +23,8 @@ class dYaTrack(
     val storageDir: String? = null,
     val fileSize: Int? = null,
     val trackSource: String? = null,
+    val fadeStartMs: Long? = null,
+    val fadeEndMs: Long? = null,
 //    val availableForPremiumUsers: Boolean? = null,
 //    val availableFullWithoutPermission: Boolean? = null,
 //    val availableForOptions: List<Options> = listOf(),
@@ -110,7 +113,7 @@ data class dTrackArtistCrossRef(
     val artistLocalId: Long
 )
 
-/** Сохраняет пустое название как признак неполной записи; такой трек доступен лишь из кеша. */
+/** Переносит метки фейда и сохраняет пустое название как признак неполной записи. */
 fun YaTrack.toEntity(availabilityCheckedAt: Long = System.currentTimeMillis()): dYaTrack =
     dYaTrack(
         id = id,
@@ -120,6 +123,8 @@ fun YaTrack.toEntity(availabilityCheckedAt: Long = System.currentTimeMillis()): 
         durationMs = durationMs,
         previewDurationMs = previewDurationMs,
         storageDir = storageDir,
+        fadeStartMs = fade?.inStart.toFadePositionMs(),
+        fadeEndMs = fade?.outStop.toFadePositionMs(),
         fileSize = fileSize,
         trackSource = trackSource,
         ogImageUri = ogImageUri,
@@ -129,24 +134,35 @@ fun YaTrack.toEntity(availabilityCheckedAt: Long = System.currentTimeMillis()): 
         this.albums = this@toEntity.albums.map { dYaAlbum(it.id, it.title) }
     }
 
-/** Неполный ответ обновляет доступность, сохраняя известную метадату для локального воспроизведения. */
+/** Сохраняет известные точки fade и остальную метадату, если ответ о треке неполный. */
 internal fun dYaTrack.withStoredMetadata(previous: dYaTrack?): dYaTrack {
-    if (title.isNotBlank()) return this
+    val incomplete = title.isBlank()
+    val fallback = previous.takeIf { incomplete }
+    val savedFadeStart = fadeStartMs ?: previous?.fadeStartMs
+    val savedFadeEnd = fadeEndMs ?: previous?.fadeEndMs
+    if (!incomplete && savedFadeStart == fadeStartMs && savedFadeEnd == fadeEndMs) return this
     return dYaTrack(
         id = id,
-        title = previous?.title?.takeIf { it.isNotBlank() } ?: "Недоступный трек",
-        available = false,
+        title = if (incomplete) fallback?.title?.takeIf { it.isNotBlank() } ?: "Недоступный трек" else title,
+        available = available && !incomplete,
         availabilityCheckedAt = availabilityCheckedAt,
-        ogImageUri = previous?.ogImageUri ?: ogImageUri,
-        coverUri = previous?.coverUri ?: coverUri,
-        durationMs = previous?.durationMs ?: durationMs,
-        previewDurationMs = previous?.previewDurationMs ?: previewDurationMs,
-        storageDir = previous?.storageDir ?: storageDir,
-        fileSize = previous?.fileSize ?: fileSize,
-        trackSource = previous?.trackSource ?: trackSource,
+        ogImageUri = fallback?.ogImageUri ?: ogImageUri,
+        coverUri = fallback?.coverUri ?: coverUri,
+        durationMs = fallback?.durationMs ?: durationMs,
+        previewDurationMs = fallback?.previewDurationMs ?: previewDurationMs,
+        storageDir = fallback?.storageDir ?: storageDir,
+        fileSize = fallback?.fileSize ?: fileSize,
+        trackSource = fallback?.trackSource ?: trackSource,
+        fadeStartMs = savedFadeStart,
+        fadeEndMs = savedFadeEnd,
     ).apply {
-        artists = previous?.artists?.takeIf { it.isNotEmpty() } ?: this@withStoredMetadata.artists
-        albums = previous?.albums?.takeIf { it.isNotEmpty() } ?: this@withStoredMetadata.albums
-        playlists = previous?.playlists.orEmpty()
+        artists = fallback?.artists?.takeIf { it.isNotEmpty() } ?: this@withStoredMetadata.artists
+        albums = fallback?.albums?.takeIf { it.isNotEmpty() } ?: this@withStoredMetadata.albums
+        playlists = if (incomplete) fallback?.playlists.orEmpty() else this@withStoredMetadata.playlists
     }
 }
+
+/** Переводит доступные, конечные позиции Яндекса в миллисекунды. */
+private fun Double?.toFadePositionMs(): Long? =
+    this?.takeIf { it.isFinite() && it >= 0 && it <= Int.MAX_VALUE / 1000.0 }
+        ?.times(1000)?.roundToLong()

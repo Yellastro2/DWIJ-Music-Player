@@ -20,7 +20,9 @@ import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.OutputStream
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Отдаёт треки из Room немедленно и лениво освежает их сетевые метаданные по TTL.
@@ -42,6 +44,28 @@ class TrackRepository(
     val tracks: StateFlow<Map<String, dYaTrack>> = _tracks
     private val loadMutex = Mutex()
     private val refreshingTrackIds = mutableSetOf<String>()
+    private val checkedPlaybackFades = ConcurrentHashMap.newKeySet<String>()
+
+    /** Для старого кэша запрашивает метки по одному открытому треку, с ограниченным ожиданием. */
+    internal suspend fun playbackMetadata(trackId: String, online: Boolean): dYaTrack? {
+        val stored = local.getTrack(trackId)
+        if (!online || stored?.fadeStartMs != null || stored?.fadeEndMs != null ||
+            !checkedPlaybackFades.add(trackId)
+        ) return stored
+
+        var loaded = false
+        try {
+            return when (val result = withTimeoutOrNull(2_000) { fetchAndStoreTracks(listOf(trackId)) }) {
+                is DataResult.Success -> {
+                    loaded = true
+                    result.value.firstOrNull { it.id == trackId } ?: stored
+                }
+                else -> stored
+            }
+        } finally {
+            if (!loaded) checkedPlaybackFades.remove(trackId)
+        }
+    }
 
     suspend fun refreshTrackLocaly(trackId: String): DataResult<dYaTrack> {
         return try {
@@ -269,6 +293,7 @@ class TrackRepository(
         }
     }
 
+    /** Сравнивает метаданные, которые использует каталог и диалог настроек. */
     private fun dYaTrack.hasSamePublishedContent(other: dYaTrack): Boolean =
         id == other.id &&
             title == other.title &&
@@ -277,6 +302,8 @@ class TrackRepository(
             coverUri == other.coverUri &&
             durationMs == other.durationMs &&
             previewDurationMs == other.previewDurationMs &&
+            fadeStartMs == other.fadeStartMs &&
+            fadeEndMs == other.fadeEndMs &&
             storageDir == other.storageDir &&
             fileSize == other.fileSize &&
             trackSource == other.trackSource &&

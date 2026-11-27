@@ -3,9 +3,13 @@ package com.yellastrodev.dwij.data.repo
 
 import com.yellastrodev.dwij.data.DataError
 import com.yellastrodev.dwij.data.DataResult
+import com.yellastrodev.dwij.data.dao.TrackPlaybackSettingsDao
 import com.yellastrodev.dwij.data.entities.LocalTracklist
 import com.yellastrodev.dwij.data.entities.MusicSource
 import com.yellastrodev.dwij.data.entities.PlaybackTrack
+import com.yellastrodev.dwij.data.entities.PlaybackOffsets
+import com.yellastrodev.dwij.data.entities.TrackPlaybackSettings
+import com.yellastrodev.dwij.data.entities.offsetsFor
 import com.yellastrodev.dwij.data.entities.Song
 import com.yellastrodev.dwij.data.entities.dTracklist
 import com.yellastrodev.dwij.data.entities.dYaPlaylist
@@ -22,6 +26,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -41,7 +46,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.yellastrodev.dwij.playback.OfflinePlaybackPolicy
 
-/** Управляет очередью, подгрузкой каталога артиста, офлайном и реакциями. */
+/** Управляет очередью, пользовательскими отступами, подгрузкой каталога, офлайном и реакциями. */
 class PlayerRepository(
     private val engine: PlayerEngine,
     private val settings: PlaybackSettings,
@@ -54,6 +59,7 @@ class PlayerRepository(
     private val resolveOfflineTrack: (Song) -> PlaybackTrack? = { null },
     private val networkFailure: (PlaybackTrack, Boolean) -> Boolean = { track, network -> track.source != MusicSource.LOCAL && network },
     private val probeOnline: suspend (List<Song>) -> Boolean = { false },
+    private val trackSettingsDao: TrackPlaybackSettingsDao? = null,
 ) : PlaybackQueue {
 
     private val offlinePolicy = OfflinePlaybackPolicy()
@@ -221,6 +227,7 @@ class PlayerRepository(
     }
 
     /** Подготавливает воспроизводимые экземпляры и связывает продолжение с новой очередью. */
+    /** Разрешает источники и запускает очередь с настройками выбранных записей. */
     private suspend fun startQueue(
         songs: List<Song>,
         startIndex: Int,
@@ -304,7 +311,7 @@ class PlayerRepository(
             songs = playableSongs.map { indexedSong ->
                 indexedSong.value.first
             },
-            tracks = playableSongs.map { indexedSong ->
+            unconfiguredTracks = playableSongs.map { indexedSong ->
                 indexedSong.value.second
             },
             startIndex = resolvedStartIndex,
@@ -320,16 +327,69 @@ class PlayerRepository(
         return generation == userQueueGeneration
     }
 
-    /** Публикует очередь, включая восстановленную без контекста; autoPlay=false сохраняет паузу. */
+    /** Возвращает сохранённые значения или выключенные настройки с подсказками источника. */
+    suspend fun trackPlaybackSettings(instanceId: String): TrackPlaybackSettings = queueCommandMutex.withLock {
+        trackSettingsDao?.get(instanceId) ?: TrackPlaybackSettings(instanceId)
+    }
+
+    /** Сохраняет правку вне жизненного цикла диалога и обновляет экземпляры в текущей очереди. */
+    fun saveTrackPlaybackSettings(track: PlaybackTrack, settings: TrackPlaybackSettings) {
+        val dao = trackSettingsDao ?: return
+        require(track.instanceId == settings.instanceId)
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                queueCommandMutex.withLock {
+                    dao.save(settings)
+                    val offsets = if (settings.enabled) track.offsetsFor(settings) else PlaybackOffsets()
+                    if (currentPlaybackQueue.any {
+                            it.instanceId == track.instanceId && (it.offsets != offsets ||
+                                (offsets.endMs > 0 && track.durationMs != null && it.durationMs != track.durationMs))
+                        }
+                    ) {
+                        engine.updateTrackOffsets(track.instanceId, offsets, track.durationMs)
+                    }
+                    synchronized(queueRestoreLock) {
+                        currentPlaybackQueue = currentPlaybackQueue.map {
+                            if (it.instanceId == track.instanceId) it.copy(
+                                offsets = offsets,
+                                durationMs = track.durationMs ?: it.durationMs,
+                                yandexTrack = track.yandexTrack ?: it.yandexTrack,
+                            ) else it
+                        }
+                        updateCurrentTrack(engine.state.value.currentIndex)
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                logger.error(TAG, "[saveTrackPlaybackSettings] Не удалось обновить отступы", error)
+                mutableEvents.emit(PlayerEvent.ShowError("Не удалось обновить отступы"))
+            }
+        }
+    }
+
+    /** Загружает активные отступы пакетно, в том числе для офлайн-очереди. */
+    private suspend fun List<PlaybackTrack>.withTrackOffsets(): List<PlaybackTrack> {
+        val dao = trackSettingsDao ?: return this
+        val byId = map { it.instanceId }.distinct().chunked(500)
+            .flatMap { dao.enabledFor(it) }.associateBy { it.instanceId }
+        return map { track ->
+            byId[track.instanceId]?.let { track.copy(offsets = track.offsetsFor(it)) } ?: track
+        }
+    }
+
+    /** Публикует очередь с отступами, сохраняя паузу при autoPlay=false. */
     private suspend fun playPreparedQueue(
         songs: List<Song>,
-        tracks: List<PlaybackTrack>,
+        unconfiguredTracks: List<PlaybackTrack>,
         startIndex: Int,
         tracklist: dTracklist?,
         autoPlay: Boolean = true,
         expectedGeneration: Long = userQueueGeneration,
         artistContinuation: ArtistQueue? = artistQueue,
     ): Unit = queueCommandMutex.withLock {
+        if (expectedGeneration != userQueueGeneration) return
+        val tracks = unconfiguredTracks.withTrackOffsets()
         if (expectedGeneration != userQueueGeneration) return
         if (tracks.isEmpty() || startIndex !in tracks.indices) {
             logger.warning(
@@ -352,8 +412,8 @@ class PlayerRepository(
             val newSongIds = songs.map(Song::id)
 
             val sameInstances =
-                currentPlaybackQueue.map { it.instanceId to it.playbackUri } ==
-                        tracks.map { it.instanceId to it.playbackUri }
+                currentPlaybackQueue.map { Triple(it.instanceId, it.playbackUri, it.offsets) } ==
+                        tracks.map { Triple(it.instanceId, it.playbackUri, it.offsets) }
 
             if (
                 currentTrackList == newSongIds &&
@@ -480,7 +540,7 @@ class PlayerRepository(
         appendResolvedTracks(resolved)
     }
 
-    /** Обновляет таблицу индексов и движок под общим mutex команд очереди. */
+    /** Дополняет очередь выбранными записями с их сохранёнными отступами. */
     private suspend fun appendResolvedTracks(resolved: List<Pair<Song, PlaybackTrack>>) {
         val resolvedSongs = resolved.map { pair ->
             pair.first
@@ -488,7 +548,7 @@ class PlayerRepository(
 
         val playbackTracks = resolved.map { pair ->
             pair.second
-        }
+        }.withTrackOffsets()
         originalSongs = originalSongs + resolvedSongs
 
         synchronized(queueRestoreLock) {
@@ -961,7 +1021,7 @@ class PlayerRepository(
         }
     }
 
-    /** Восстанавливает автоматический офлайн вокруг текущего файла; явная локальная очередь не меняется. */
+    /** Возвращает сетевые элементы с сохранёнными отступами вокруг текущего файла. */
     private suspend fun restoreOnlineQueue(generation: Long) {
         if (generation != userQueueGeneration || dtracklist.value?.offlineOnly() == true) return
         val revision = queueRevision
@@ -977,7 +1037,8 @@ class PlayerRepository(
         if (offlinePositions.isNotEmpty() && restoredIndex >= 0) {
             queueCommandMutex.withLock {
                 if (generation != userQueueGeneration || revision != queueRevision) return
-                val tracks = resolved.map { it.third }.toMutableList()
+                val tracks = resolved.map { it.third }.withTrackOffsets().toMutableList()
+                if (generation != userQueueGeneration || revision != queueRevision) return
                 currentPlaybackQueue.getOrNull(index)?.let { tracks[restoredIndex] = it }
                 if (!engine.replaceQueueKeepingCurrent(tracks, index, restoredIndex, dtracklist.value) {
                         generation == userQueueGeneration && revision == queueRevision

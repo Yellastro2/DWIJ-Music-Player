@@ -1,6 +1,7 @@
 package com.yellastrodev.dwij.playback
 
 import com.yellastrodev.dwij.data.entities.PlaybackTrack
+import com.yellastrodev.dwij.data.entities.PlaybackOffsets
 import com.yellastrodev.dwij.data.entities.dTracklist
 import com.yellastrodev.dwij.utils.PlayerEvent
 import com.yellastrodev.dwij.utils.PlayerState
@@ -9,6 +10,9 @@ import kotlinx.coroutines.flow.StateFlow
 
 /** Платформенный плеер с согласованным перехватом окончательного отказа перед auto-next. */
 interface PlayerEngine {
+
+    /** Обновляет диапазон всех вхождений записи, сохраняя исходную позицию текущего вхождения. */
+    suspend fun updateTrackOffsets(instanceId: String, offsets: PlaybackOffsets, durationMs: Long?) {}
 
     /** True означает, что общая логика забрала переход; callback не должен вызывать команды движка. */
     fun setFailureHandler(handler: (index: Int, networkFailure: Boolean) -> Boolean) {}

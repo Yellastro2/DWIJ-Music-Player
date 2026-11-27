@@ -128,16 +128,24 @@ interface dTrackDao {
     @Update
     suspend fun updateTracks(tracks: List<dYaTrack>)
 
+    /** Читает только ранее сохранённые метки для ответов, где части fade отсутствуют. */
+    @Query("SELECT * FROM tracks WHERE id IN (:ids) AND (fadeStartMs IS NOT NULL OR fadeEndMs IS NOT NULL)")
+    suspend fun getTracksWithFade(ids: List<String>): List<dYaTrack>
+
     /**
      * Добавляет новые треки и обновляет существующие без REPLACE, чтобы не удалить
-     * каскадно их связи с плейлистами, альбомами и артистами. Неполные записи сохраняют старую метадату.
+     * каскадно их связи. Ответ без fade сохраняет метки, а неполный трек — известную метадату.
      */
     @Transaction
     suspend fun insertAll(tracks: List<dYaTrack>) {
         if (tracks.isEmpty()) return
 
         val incompleteIds = tracks.filter { it.title.isBlank() }.map { it.id }
-        val previous = getTracks(incompleteIds).associateBy { it.id }
+        val missingFadeIds = tracks.filter {
+            it.title.isNotBlank() && (it.fadeStartMs == null || it.fadeEndMs == null)
+        }.map { it.id }
+        val previous = (getTracks(incompleteIds) + missingFadeIds.distinct().chunked(500)
+            .flatMap { getTracksWithFade(it) }).associateBy { it.id }
         val resolvedTracks = tracks.map { it.withStoredMetadata(previous[it.id]) }
 
         // 1. Определяем, какие треки уже есть

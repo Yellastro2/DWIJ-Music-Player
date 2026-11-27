@@ -1,6 +1,7 @@
 package com.yellastrodev.dwij.desktop.playback
 
 import com.yellastrodev.dwij.data.entities.PlaybackTrack
+import com.yellastrodev.dwij.data.entities.PlaybackOffsets
 import com.yellastrodev.dwij.data.entities.MusicSource
 import com.yellastrodev.dwij.data.entities.dYaPlaylist
 import com.yellastrodev.dwij.data.entities.dTracklist
@@ -35,7 +36,7 @@ import java.util.UUID
 /**
  * JVM/Windows backend общего [PlayerEngine].
  *
- * JavaFX MediaPlayer отвечает за реальное воспроизведение.
+ * JavaFX MediaPlayer играет заданный диапазон, а общий UI получает отсчёт от его начала.
  * WindowsMediaSession публикует состояние в Windows SMTC
  * и принимает системные media commands. JavaFX callback'и также передают
  * фактические события прослушивания в общий [PlaybackFeedbackTracker].
@@ -66,6 +67,26 @@ class DesktopPlayerEngine(
 
     /** Подключает общий порог после четырёх попыток текущего трека. */
     override fun setFailureHandler(handler: (Int, Boolean) -> Boolean) { failureHandler = handler }
+
+    /** Обновляет все вхождения записи и переподготавливает текущее только при смене границ. */
+    override suspend fun updateTrackOffsets(instanceId: String, offsets: PlaybackOffsets, durationMs: Long?) {
+        commandMutex.withLock {
+            val before = queue.getOrNull(currentIndex)
+            queue = queue.map {
+                if (it.instanceId == instanceId) it.copy(offsets = offsets, durationMs = durationMs ?: it.durationMs)
+                else it
+            }
+            if (before == null || before.instanceId != instanceId || before.offsets == offsets || closed) return
+            val filePosition = JavaFxRuntime.call { currentPlayer?.currentTime.toMillisSafe() }
+            startTrackLocked(
+                index = currentIndex,
+                autoPlay = state.value.wantsToPlay,
+                direction = TrackChangeDirection.DIRECT,
+                feedbackReason = PlaybackTransitionReason.OTHER,
+                filePositionMs = filePosition,
+            )
+        }
+    }
 
     /** Останавливает намерение играть, не запуская очередную попытку. */
     override suspend fun stopPlayback(clearQueue: Boolean) {
@@ -344,6 +365,7 @@ class DesktopPlayerEngine(
         }
     }
 
+    /** При подготовке намерение играть применяется после установки границ в READY. */
     override suspend fun togglePlayPause() {
         val wantsToPlay =
             !state.value.wantsToPlay
@@ -357,9 +379,9 @@ class DesktopPlayerEngine(
                 currentPlayer
                     ?: return@call
 
-            if (wantsToPlay) {
+            if (wantsToPlay && player.status != MediaPlayer.Status.UNKNOWN) {
                 player.play()
-            } else {
+            } else if (!wantsToPlay) {
                 player.pause()
             }
         }
@@ -403,6 +425,7 @@ class DesktopPlayerEngine(
         }
     }
 
+    /** Переводит позицию UI в координаты файла для JavaFX. */
     override suspend fun seekTo(
         positionMs: Long,
     ) {
@@ -420,7 +443,7 @@ class DesktopPlayerEngine(
 
                 player.seek(
                     Duration.millis(
-                        safePosition.toDouble(),
+                         (safePosition + player.startTime.toMillisSafe()).toDouble(),
                     ),
                 )
 
@@ -547,13 +570,14 @@ class DesktopPlayerEngine(
         }
     }
 
-    /** Инициализирует состояние/feedback/SMTC вне FX до создания плеера; ограничивает бюджет подготовки. */
+    /** Подготавливает источник и при необходимости возобновляет его с исходной позиции файла. */
     private suspend fun startTrackLocked(
         index: Int,
         autoPlay: Boolean,
         direction: TrackChangeDirection? = null,
         feedbackReason: PlaybackTransitionReason,
         retry: Int = 0,
+        filePositionMs: Long? = null,
     ) {
         if (closed) return
         val track =
@@ -618,11 +642,13 @@ class DesktopPlayerEngine(
         currentTrackInstanceId =
             track.instanceId
 
-        val newPlayer = try {
+        try {
             callbackQueue.call {
                 if (closed || currentAttempt !== attempt || attempt.isFailed) return@call
                 stateStore.setPlayback(isPlaying = false, currentIndex = index)
-                stateStore.setProgress(positionMs = 0L, durationMs = track.durationMs ?: 0L)
+                val range = track.offsets.range(track.durationMs)
+                val duration = (range?.endMs ?: track.durationMs ?: 0L) - (range?.startMs ?: 0L)
+                stateStore.setProgress(positionMs = 0L, durationMs = duration.coerceAtLeast(0))
                 currentFeedbackMetadata = track.toFeedbackMetadata()
                 playbackFeedbackTracker?.onMediaItemTransition(
                     metadata = currentFeedbackMetadata,
@@ -661,6 +687,8 @@ class DesktopPlayerEngine(
                     index =
                         index,
                     attempt = attempt,
+                    offsets = track.offsets,
+                    filePositionMs = filePositionMs,
                 )
 
                 player
@@ -685,17 +713,6 @@ class DesktopPlayerEngine(
         requestWindowsArtwork(
             track,
         )
-
-        if (state.value.wantsToPlay) {
-            JavaFxRuntime.call {
-                if (
-                    currentPlayer ===
-                    newPlayer && !closed && currentAttempt === attempt && !attempt.isFailed
-                ) {
-                    newPlayer.play()
-                }
-            }
-        }
     }
 
     private fun requestWindowsArtwork(
@@ -744,10 +761,13 @@ class DesktopPlayerEngine(
     }
 
     /** Снимает свойства на FX; callback читает актуальный индекс попытки после восстановления онлайн-очереди. */
+    /** Устанавливает диапазон до запуска и публикует относительную шкалу плеера. */
     private fun installCallbacks(
         player: MediaPlayer,
         index: Int,
         attempt: DesktopPlaybackAttempt,
+        offsets: PlaybackOffsets,
+        filePositionMs: Long?,
     ) {
         val stallTimeout = if (queue.getOrNull(attempt.index)?.source == MusicSource.VK) DesktopPlaybackAttempt.VK_STALL_TIMEOUT_MS
             else DesktopPlaybackAttempt.STALL_TIMEOUT_MS
@@ -789,13 +809,19 @@ class DesktopPlayerEngine(
             logPlayerDiagnostics("ready", player, attempt.index)
             preparationJob?.cancel()
 
-            val positionMs =
-                player.currentTime
-                    .toMillisSafe()
-
-            val durationMs =
-                player.totalDuration
-                    .toMillisSafe()
+            val fullDuration = player.media.duration.toMillisSafe().takeIf { it > 0 }
+            val range = offsets.range(fullDuration)
+            val startMs = range?.startMs ?: 0L
+            val endMs = range?.endMs ?: fullDuration
+            val filePosition = (filePositionMs ?: startMs).coerceAtLeast(startMs)
+                .let { if (endMs == null) it else it.coerceAtMost((endMs - 1).coerceAtLeast(startMs)) }
+            range?.let {
+                player.startTime = Duration.millis(startMs.toDouble())
+                it.endMs?.let { end -> player.stopTime = Duration.millis(end.toDouble()) }
+            }
+            if (filePosition != startMs || startMs > 0L) player.seek(Duration.millis(filePosition.toDouble()))
+            val positionMs = filePosition - startMs
+            val durationMs = player.cycleDuration.toMillisSafe()
 
             dispatchCallback(attempt) {
                 if (attempt.isFailed) return@dispatchCallback
@@ -803,9 +829,10 @@ class DesktopPlayerEngine(
                 stateStore.setProgress(positionMs, durationMs)
                 stateStore.completeTrackChange()
                 windowsMediaSession.setTimeline(durationMs, positionMs)
-                notifyFeedbackProgress(positionMs, durationMs)
+                notifyFeedbackProgress(filePosition, fullDuration ?: durationMs)
                 lastWindowsPositionUpdateNanos = System.nanoTime()
             }
+            if (state.value.wantsToPlay) player.play()
         }
 
         player.setOnPlaying {
@@ -815,7 +842,7 @@ class DesktopPlayerEngine(
                 stalledJob?.cancel()
                 logPlayerDiagnostics("playing", player, attempt.index)
                 val positionMs = player.currentTime.toMillisSafe()
-                val durationMs = player.totalDuration.toMillisSafe()
+                val durationMs = player.media.duration.toMillisSafe()
                 dispatchCallback(attempt) {
                     if (attempt.isFailed) return@dispatchCallback
                     logger.debug(TAG, "[playing] Воспроизведение началось: index=${attempt.index}, позицияМс=$positionMs")
@@ -848,7 +875,7 @@ class DesktopPlayerEngine(
             ) {
                 stalledJob?.cancel()
                 val positionMs = player.currentTime.toMillisSafe()
-                val durationMs = player.totalDuration.toMillisSafe()
+                val durationMs = player.media.duration.toMillisSafe()
                 dispatchCallback(attempt) {
                     stateStore.setPlaying(false)
                     windowsMediaSession.setPlaying(false)
@@ -862,7 +889,7 @@ class DesktopPlayerEngine(
                 currentPlayer === player && currentAttempt === attempt
             ) {
                 val positionMs = player.currentTime.toMillisSafe()
-                val durationMs = player.totalDuration.toMillisSafe()
+                val durationMs = player.media.duration.toMillisSafe()
                 dispatchCallback(attempt) {
                     stateStore.setPlaying(false)
                     windowsMediaSession.setPlaying(false)
@@ -887,19 +914,16 @@ class DesktopPlayerEngine(
                         return@addListener
                     }
                     lastProgressUpdateNanos = now
-                    val positionMs =
-                        currentTime
-                            .toMillisSafe()
-
-                    val durationMs =
-                        player.totalDuration
-                            .toMillisSafe()
+                    val filePosition = currentTime.toMillisSafe()
+                    val fullDuration = player.media.duration.toMillisSafe()
+                    val durationMs = player.cycleDuration.toMillisSafe()
+                    val positionMs = (filePosition - player.startTime.toMillisSafe()).coerceIn(0, durationMs)
 
                     callbackQueue.postProgress {
                         if (!closed && currentAttempt === attempt && !attempt.isFailed) {
                             stateStore.setProgress(positionMs, durationMs)
                             maybeUpdateWindowsPosition(positionMs)
-                            notifyFeedbackProgress(positionMs, durationMs)
+                            notifyFeedbackProgress(filePosition, fullDuration)
                         }
                     }
                 }
@@ -912,12 +936,13 @@ class DesktopPlayerEngine(
                 return@setOnEndOfMedia
             }
 
-            val positionMs = player.currentTime.toMillisSafe()
-            val durationMs = player.totalDuration.toMillisSafe()
+            val filePosition = player.currentTime.toMillisSafe()
+            val fullDuration = player.media.duration.toMillisSafe()
+            val durationMs = player.cycleDuration.toMillisSafe()
             dispatchCallback(attempt) {
                 if (attempt.isFailed) return@dispatchCallback
-                stateStore.setProgress(positionMs, durationMs)
-                finishCurrentFeedback(positionMs, durationMs, true)
+                stateStore.setProgress(durationMs, durationMs)
+                finishCurrentFeedback(filePosition, fullDuration, true)
                 scope.launch { handleTrackEnded(finishedIndex = attempt.index, attempt = attempt) }
             }
         }
@@ -934,7 +959,7 @@ class DesktopPlayerEngine(
 
             logPlayerDiagnostics("playerError", player, attempt.index)
             val positionMs = player.currentTime.toMillisSafe()
-            val durationMs = player.totalDuration.toMillisSafe()
+            val durationMs = player.media.duration.toMillisSafe()
             dispatchCallback(attempt) {
                 logger.error(TAG, "[MediaPlayer] Ошибка воспроизведения: index=${attempt.index}, ${safeMediaError(error)}")
                 windowsMediaSession.setPlaying(false)

@@ -21,6 +21,9 @@ import com.yellastrodev.dwij.TrackListItemUiModel
 import com.yellastrodev.dwij.data.DataError
 import com.yellastrodev.dwij.data.DataResult
 import com.yellastrodev.dwij.data.entities.MusicSource
+import com.yellastrodev.dwij.data.entities.PlaybackOffsets
+import com.yellastrodev.dwij.data.entities.PlaybackTrack
+import com.yellastrodev.dwij.data.entities.TrackPlaybackSettings
 import com.yellastrodev.dwij.data.entities.Song
 import com.yellastrodev.dwij.data.entities.SongMatchCandidateEntity
 import com.yellastrodev.dwij.data.entities.TrackInstance
@@ -51,6 +54,7 @@ import com.yellastrodev.dwij.ui.FullPlayerUiState
 import com.yellastrodev.dwij.ui.LocalYamLogger
 import com.yellastrodev.dwij.ui.MultiSourceDialog
 import com.yellastrodev.dwij.ui.TrackSourceSearchDialog
+import com.yellastrodev.dwij.ui.TrackPlaybackSettingsDialog
 import com.yellastrodev.dwij.ui.missingOnlineSources
 import com.yellastrodev.dwij.ui.TrackSourceIndicator
 import com.yellastrodev.dwij.ui.TrackSourceOptionUiModel
@@ -66,7 +70,7 @@ import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.getString
 import org.jetbrains.compose.resources.stringResource
 
-/** Общий плеер: реакции читаются по ID источника, включая временные очереди без Song в Room. */
+/** Общий экран плеера с реакциями, выбором источника и настройками текущей записи. */
 @Composable
 fun PlayerRoute(
     component: DwijComponent,
@@ -85,6 +89,7 @@ fun PlayerRoute(
     val track by playerModel.track.collectAsState()
     var sourceSearchSong by remember { mutableStateOf<com.yellastrodev.dwij.data.entities.Song?>(null) }
     val playbackTrack by playerModel.playbackTrack.collectAsState()
+    var settingsTrack by remember { mutableStateOf<PlaybackTrack?>(null) }
     val playerState by playerModel.playerState.collectAsState()
     val isOffline by component.playerRepo.isOffline.collectAsState()
     val playedTracklist by playerModel.playdTracklist.collectAsState()
@@ -649,7 +654,54 @@ fun PlayerRoute(
                 onShareYandexUrl(YandexMusicShareLinks.track(trackId))
             }
         },
+        onTrackSettingsClick = playbackTrack?.let { current ->
+            {
+                val measuredDuration = playerState.duration.takeIf {
+                    it > 0 && playerState.pendingTrackChange == null && current.offsets == PlaybackOffsets()
+                }
+                settingsTrack = current.copy(durationMs = measuredDuration ?: current.durationMs)
+            }
+        },
     )
+
+    settingsTrack?.let { target ->
+        var settings by remember(target) { mutableStateOf<TrackPlaybackSettings?>(null) }
+        var metadata by remember(target) { mutableStateOf(target) }
+        LaunchedEffect(target) {
+            try {
+                if (target.source == MusicSource.YANDEX) {
+                    val stored = component.trackRepository.playbackMetadata(target.id, online = !isOffline)
+                    if (stored != null) {
+                        metadata = target.copy(
+                            yandexTrack = stored,
+                            durationMs = target.durationMs ?: stored.durationMs?.takeIf { it > 0 }?.toLong(),
+                        )
+                    }
+                }
+                settings = component.playerRepo.trackPlaybackSettings(target.instanceId)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                logger.error("PlayerRoute", "[trackPlaybackSettings] Не удалось загрузить отступы", error)
+                uiMessages.tryEmit("Не удалось загрузить отступы")
+                settingsTrack = null
+            }
+        }
+        settings?.let { loaded ->
+            val sourceName = stringResource(when (target.source) {
+                MusicSource.YANDEX -> Res.string.player_source_yandex
+                MusicSource.VK -> Res.string.home_source_vk_music
+                MusicSource.LOCAL -> Res.string.player_source_local
+            })
+            TrackPlaybackSettingsDialog(
+                track = metadata,
+                sourceName = sourceName,
+                initialSettings = loaded,
+                onSave = { component.playerRepo.saveTrackPlaybackSettings(metadata, it) },
+                onDismiss = { settingsTrack = null },
+            )
+        }
+    }
 
     if (showArtistDialog) {
         ArtistSelectionDialog(

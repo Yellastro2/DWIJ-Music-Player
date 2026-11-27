@@ -240,6 +240,16 @@
     <string name="player_repeat_content_description">Повторять очередь</string>
     <string name="player_back_content_description">Вернуться назад</string>
     <string name="player_more_content_description">Дополнительное меню</string>
+    <string name="player_track_settings">Настройки</string>
+    <string name="player_track_settings_title">Настройки трека</string>
+    <string name="player_track_offsets">Отступы воспроизведения</string>
+    <string name="player_track_offset_start">Начало, с</string>
+    <string name="player_track_offset_end">Конец, с</string>
+    <string name="player_track_offsets_enabled">Отступать</string>
+    <string name="player_track_offsets_invalid_number">Введите неотрицательное число секунд.</string>
+    <string name="player_track_offsets_invalid_range">Сумма отступов должна быть меньше длительности записи.</string>
+    <string name="player_track_offsets_unknown_duration">Отступ от конца доступен после определения длительности записи.</string>
+    <string name="player_track_settings_close">Закрыть</string>
     <string name="player_track_wave">Волна по треку</string>
     <string name="player_like_content_description">Поставить лайк</string>
     <string name="player_unlike_content_description">Убрать лайк</string>

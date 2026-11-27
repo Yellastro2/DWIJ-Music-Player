@@ -50,6 +50,9 @@ import com.yellastrodev.dwij.data.entities.VkTrackEntity
 import com.yellastrodev.dwij.data.entities.VkLibraryEntity
 import com.yellastrodev.dwij.data.db.DatabaseMigrations.Companion.MIGRATION_14_15
 import com.yellastrodev.dwij.data.db.DatabaseMigrations.Companion.MIGRATION_15_16
+import com.yellastrodev.dwij.data.db.DatabaseMigrations.Companion.MIGRATION_16_17
+import com.yellastrodev.dwij.data.dao.TrackPlaybackSettingsDao
+import com.yellastrodev.dwij.data.entities.TrackPlaybackSettings
 
 /** Общая Room-база: source-таблицы раздельны, логические песни связаны через track_instances. */
 @Database(
@@ -77,10 +80,14 @@ import com.yellastrodev.dwij.data.db.DatabaseMigrations.Companion.MIGRATION_15_1
         CatalogAlbumTrackEntity::class,
         VkTrackEntity::class,
         VkLibraryEntity::class,
+        TrackPlaybackSettings::class,
     ],
-    version = 16,
+    version = 17,
 )
 abstract class DwijDatabase : RoomDatabase() {
+    /** Настройки воспроизведения конкретных экземпляров. */
+    abstract fun trackPlaybackSettingsDao(): TrackPlaybackSettingsDao
+
     /** Метадата и аккаунтные коллекции VK, отдельно от таблиц других источников. */
     abstract fun vkLibraryDao(): VkLibraryDao
     abstract fun catalogDao(): CatalogDao
@@ -91,7 +98,7 @@ abstract class DwijDatabase : RoomDatabase() {
     abstract fun songMatchDao(): SongMatchDao
 }
 
-/** Подключает последовательные миграции, включая добавление независимого VK-хранилища. */
+/** Подключает последовательные миграции общей базы обоих плееров. */
 fun buildDwijDatabase(
     builder: RoomDatabase.Builder<DwijDatabase>,
 ): DwijDatabase {
@@ -112,6 +119,7 @@ fun buildDwijDatabase(
             MIGRATION_13_14,
             MIGRATION_14_15,
             MIGRATION_15_16,
+            MIGRATION_16_17,
         )
         .build()
 }

@@ -9,6 +9,25 @@ class DatabaseMigrations {
 
     companion object {
 
+        /** Добавляет метки Яндекса и настройки источников с выключенными отступами по умолчанию. */
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            /** Прежние записи автоматически получают null для обеих рекомендованных границ. */
+            override fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE tracks ADD COLUMN fadeStartMs INTEGER")
+                connection.execSQL("ALTER TABLE tracks ADD COLUMN fadeEndMs INTEGER")
+                connection.execSQL(
+                    """
+                    CREATE TABLE track_playback_settings (
+                        instanceId TEXT NOT NULL PRIMARY KEY,
+                        enabled INTEGER NOT NULL,
+                        skipStartMs INTEGER,
+                        skipEndMs INTEGER
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         /** Добавляет кеш сетки VK, сохраняя все прежние треки и аккаунтные снимки. */
         val MIGRATION_15_16 = object : Migration(15, 16) {
             /** Старые снимки остаются с неизвестной сеткой до первого успешного обновления. */

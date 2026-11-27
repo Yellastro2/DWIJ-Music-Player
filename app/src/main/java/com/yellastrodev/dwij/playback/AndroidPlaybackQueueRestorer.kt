@@ -1,9 +1,11 @@
 package com.yellastrodev.dwij.playback
 
 import androidx.media3.common.MediaItem
+import androidx.media3.common.C
 import com.yellastrodev.dwij.data.entities.Artist
 import com.yellastrodev.dwij.data.entities.MusicSource
 import com.yellastrodev.dwij.data.entities.PlaybackTrack
+import com.yellastrodev.dwij.data.entities.PlaybackOffsets
 import com.yellastrodev.dwij.data.entities.Song
 import com.yellastrodev.dwij.data.entities.TrackInstance
 import com.yellastrodev.dwij.data.repo.SongRepository
@@ -12,7 +14,7 @@ import com.yellastrodev.dwij.playback.feedback.PlaybackMetadataKeys
 /** Собирает UI-очередь из фактических MediaItem, не меняя источник, URI, порядок и повторы. */
 class AndroidPlaybackQueueRestorer(private val songs: SongRepository) {
 
-    /** Читает только локальную БД; отсутствующие записи заменяет сохранённой метадатой. */
+    /** Восстанавливает модель выбранного источника и диапазона из локальной БД и снимка. */
     suspend fun restore(items: List<MediaItem>): List<Pair<Song, PlaybackTrack>> {
         val indexed = items.groupBy(::source).flatMap { (source, group) ->
             songs.songsForSourceIds(source, group.map { it.mediaId }.distinct())
@@ -48,6 +50,15 @@ class AndroidPlaybackQueueRestorer(private val songs: SongRepository) {
                 isLiked = false,
             )
             val instance = song.instances.firstOrNull { it.id == instanceId }
+            val sourceDuration = duration ?: when (instance) {
+                is TrackInstance.Local -> instance.track.durationMs
+                is TrackInstance.Yandex -> instance.track.durationMs?.toLong()
+                is TrackInstance.Vk -> instance.track.duration * 1000
+                null -> null
+            }?.takeIf { it > 0 }
+            val clipping = item.clippingConfiguration
+            val endOffset = clipping.endPositionMs.takeIf { it != C.TIME_END_OF_SOURCE }
+                ?.let { end -> sourceDuration?.minus(end)?.coerceAtLeast(0) } ?: 0
             song to PlaybackTrack(
                 id = item.mediaId,
                 songId = song.id,
@@ -55,11 +66,12 @@ class AndroidPlaybackQueueRestorer(private val songs: SongRepository) {
                 source = source,
                 title = song.title,
                 artistNames = song.artistNames,
-                durationMs = song.durationMs ?: duration,
+                durationMs = sourceDuration,
                 playbackUri = requireNotNull(item.localConfiguration).uri.toString(),
                 artworkUri = song.coverUri,
                 yandexTrack = (instance as? TrackInstance.Yandex)?.track,
                 localTrack = (instance as? TrackInstance.Local)?.track,
+                offsets = PlaybackOffsets(clipping.startPositionMs, endOffset),
             )
         }
     }

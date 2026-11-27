@@ -7,6 +7,7 @@ import androidx.media3.common.MediaMetadata
 import com.yellastrodev.dwij.TRACK_ID
 import com.yellastrodev.dwij.data.entities.MusicSource
 import com.yellastrodev.dwij.data.entities.PlaybackTrack
+import com.yellastrodev.dwij.data.entities.PlaybackOffsets
 import com.yellastrodev.dwij.data.entities.dTracklist
 import com.yellastrodev.dwij.data.entities.dYaPlaylist
 import com.yellastrodev.dwij.playback.feedback.PlaybackMetadataKeys
@@ -15,7 +16,7 @@ import java.util.UUID
 /** Передаёт источник, идентичность песни и URI в Media3 для воспроизведения и восстановления UI. */
 class AndroidMediaItemMapper {
 
-    /** Сохраняет ID логической песни и экземпляра, включая временные песни вне Room. */
+    /** Сохраняет ID экземпляра и применяет его активные границы воспроизведения. */
     fun map(
         track: PlaybackTrack,
         tracklist: dTracklist?,
@@ -92,6 +93,7 @@ class AndroidMediaItemMapper {
             .setMediaId(track.id)
             .setUri(track.playbackUri)
             .setMediaMetadata(metadata)
+            .setClippingConfiguration(track.offsets.toClippingConfiguration(track.durationMs))
             .build()
     }
 
@@ -100,4 +102,14 @@ class AndroidMediaItemMapper {
         const val INSTANCE_ID = "dwij_instance_id"
         private const val ANDROID_PLAYBACK_REPORT_SOURCE = "dwij-android"
     }
+}
+
+/** Media3 отсчитывает позицию и длительность от начала заданного диапазона. */
+internal fun PlaybackOffsets.toClippingConfiguration(durationMs: Long?): MediaItem.ClippingConfiguration {
+    val range = range(durationMs?.takeIf { it > 0 })
+        ?: return MediaItem.ClippingConfiguration.UNSET
+    return MediaItem.ClippingConfiguration.Builder()
+        .setStartPositionMs(range.startMs)
+        .apply { range.endMs?.let { setEndPositionMs(it) } }
+        .build()
 }

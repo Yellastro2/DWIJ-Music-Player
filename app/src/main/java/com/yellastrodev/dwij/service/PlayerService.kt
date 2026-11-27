@@ -24,18 +24,23 @@ import com.yellastrodev.dwij.activities.MainActivity
 import com.yellastrodev.dwij.data.DataResult
 import com.yellastrodev.dwij.data.entities.Song
 import com.yellastrodev.dwij.data.entities.MusicSource
+import com.yellastrodev.dwij.data.entities.PlaybackRange
 import com.yellastrodev.dwij.data.entities.dYaLikeTracklist.Companion.KIND_LIKED
 import com.yellastrodev.dwij.data.repo.TrackCacheRepository
 import com.yellastrodev.dwij.data.source.YaLazyDataSourceFactory
 import com.yellastrodev.dwij.data.source.yandexStreamingTrackId
 import com.yellastrodev.dwij.playback.stream.StreamingTrackCache
 import com.yellastrodev.dwij.playback.AndroidPlaybackFeedbackAdapter
+import com.yellastrodev.dwij.playback.AndroidMediaItemMapper
 import com.yellastrodev.dwij.playback.AndroidPlayerListener
 import com.yellastrodev.dwij.playback.AndroidPlaybackQueueRestorer
 import com.yellastrodev.dwij.playback.BluetoothPlaybackResume
 import com.yellastrodev.dwij.playback.PlaybackResumeStore
 import com.yellastrodev.dwij.playback.AndroidPlaybackRecovery
 import com.yellastrodev.dwij.playback.AndroidPlaybackLoadErrorPolicy
+import com.yellastrodev.dwij.playback.fileDurationMs
+import com.yellastrodev.dwij.playback.filePositionMs
+import com.yellastrodev.dwij.playback.feedback.PlaybackMetadataKeys
 import com.yellastrodev.dwij.playback.interleaveShuffleTracks
 import com.yellastrodev.dwij.playback.PlaybackStateStore
 import com.yellastrodev.dwij.utils.PlayerEvent
@@ -276,7 +281,7 @@ class PlayerService : MediaSessionService() {
             },
             onFailure = { index, network -> onPlaybackFailure(index, network) },
             finishFeedback = {
-                playbackFeedback.onPlaybackEnded(player.currentPosition, player.duration, false)
+                playbackFeedback.onPlaybackEnded(player.filePositionMs, player.fileDurationMs, false)
             },
         )
         player.addListener(playbackRecovery)
@@ -474,6 +479,50 @@ class PlayerService : MediaSessionService() {
         )
     }
 
+    /** Меняет конфигурацию нужных вхождений, сохраняя абсолютную позицию текущего файла. */
+    fun updateTrackOffsets(instanceId: String, clipping: MediaItem.ClippingConfiguration, durationMs: Long?) {
+        val currentIndex = player.currentMediaItemIndex
+        val filePosition = player.filePositionMs
+        val shuffleOrder = player.shuffleOrder
+        val playedThrough = artistShufflePlayedThrough
+        var changed = false
+        for (index in 0 until player.mediaItemCount) {
+            val item = player.getMediaItemAt(index)
+            if (item.mediaMetadata.extras?.getString(AndroidMediaItemMapper.INSTANCE_ID) != instanceId ||
+                item.clippingConfiguration == clipping
+            ) continue
+
+            val updated = item.buildUpon()
+                .setClippingConfiguration(clipping)
+                .apply {
+                    if (durationMs != null) {
+                        val extras = item.mediaMetadata.extras?.let(::Bundle) ?: Bundle()
+                        extras.putLong(PlaybackMetadataKeys.PLAY_DURATION_MS, durationMs)
+                        setMediaMetadata(item.mediaMetadata.buildUpon().setExtras(extras).build())
+                    }
+                }
+                .build()
+            changed = true
+            if (index == currentIndex) {
+                playbackRecovery.onUserCommand()
+                val end = clipping.endPositionMs.takeIf { it != C.TIME_END_OF_SOURCE }
+                val range = PlaybackRange(clipping.startPositionMs, end)
+                val lastPosition = end?.minus(range.startMs)?.minus(1) ?: Long.MAX_VALUE
+                val newPosition = range.relativePosition(filePosition).coerceAtMost(lastPosition)
+                player.addMediaItem(index + 1, updated)
+                player.seekTo(index + 1, newPosition)
+                player.removeMediaItem(index)
+            } else {
+                player.replaceMediaItem(index, updated)
+            }
+        }
+        if (changed) {
+            player.setShuffleOrder(shuffleOrder)
+            artistShufflePlayedThrough = playedThrough
+            resumeStore.save(player)
+        }
+    }
+
     /** Дописывает MediaItem и вставляет новые индексы каталога в будущий shuffle-порядок. */
     fun addTracks(items: List<MediaItem>) {
         val previousSize = player.mediaItemCount
@@ -592,8 +641,8 @@ class PlayerService : MediaSessionService() {
 
         if (::player.isInitialized) {
             playbackFeedback.onPlaybackEnded(
-                currentPositionMs = player.currentPosition,
-                durationMs = player.duration,
+                currentPositionMs = player.filePositionMs,
+                durationMs = player.fileDurationMs,
                 completed = false,
             )
         }
